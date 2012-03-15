@@ -16,7 +16,7 @@ First, you need Xcode >= 4.3.1. After that, you need autoconf213 (I recommend ma
     > libjs_static.a (for architecture i386):	current ar archive random library
     > libjs_static.a (for architecture armv7):	current ar archive random library
 
-After that you would get a fat (i386 + armv7) library named libjs_static.a and a directory named dist, full of symlinks. To use that you can just cp -RL the dist directy and place it wherever you want:
+After that you would get a fat (i386 + armv7) library named libjs_static.a and a directory named dist, full of symlinks. To use that you can just cp -RL the dist directory and place it wherever you want:
 
     cp -RL dist ~/Desktop/testmonkey/libs/spidermonkey
 
