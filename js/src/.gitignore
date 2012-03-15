@@ -1,0 +1,4 @@
+*.pyc
+build-ios/
+configure
+.DS_Store
