@@ -1,0 +1,4 @@
+*.pyc
+js/src/build-ios/
+js/src/configure
+.DS_Store
