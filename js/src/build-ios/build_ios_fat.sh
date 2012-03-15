@@ -13,4 +13,4 @@ mv libjs_static.a libjs_static_armv7.a
 # make fat library
 lipo -create -output libjs_static.a libjs_static_i386.a libjs_static_armv7.a
 # strip the library
-# strip -x -S libjs_static.a
+strip -x -S libjs_static.a
