@@ -2,3 +2,10 @@
 js/src/build-ios/
 js/src/configure
 .DS_Store
+
+# android temporary build files
+js/src/build-android/
+js/src/autom4te.cache/
+
+# build output
+dist/
