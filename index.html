@@ -1,0 +1,130 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="chrome=1">
+    <title>Spidermonkey by funkaster</title>
+    
+    <link rel="stylesheet" href="stylesheets/styles.css">
+    <link rel="stylesheet" href="stylesheets/pygment_trac.css">
+    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+    <!--[if lt IE 9]>
+    <script src="//html5shiv.googlecode.com/svn/trunk/html5.js"></script>
+    <![endif]-->
+  </head>
+  <body>
+    <div class="wrapper">
+      <header>
+        <h1>Spidermonkey</h1>
+        <p>clone from the hg repo - only the necessary stuff to build the iOS version</p>
+        <p class="view"><a href="https://github.com/funkaster/spidermonkey">View the Project on GitHub <small>funkaster/spidermonkey</small></a></p>
+        <ul>
+          <li><a href="https://github.com/funkaster/spidermonkey/zipball/master">Download <strong>ZIP File</strong></a></li>
+          <li><a href="https://github.com/funkaster/spidermonkey/tarball/master">Download <strong>TAR Ball</strong></a></li>
+          <li><a href="https://github.com/funkaster/spidermonkey">Fork On <strong>GitHub</strong></a></li>
+        </ul>
+      </header>
+      <section>
+        <h1>spidermonkey</h1>
+
+<p>The <a href="https://developer.mozilla.org/En/SpiderMonkey/">SpiderMonkey</a> JavaScript VM buildable on Android and iOS.</p>
+
+<h2>Demo</h2>
+
+<p><a href="http://folecr.github.com/hellojs-android">http://folecr.github.com/hellojs-android</a></p>
+
+<h2>Build</h2>
+
+<h4>Prerequisistes</h4>
+
+<h5>All platforms</h5>
+
+<ul>
+<li>autoconf213</li>
+</ul><h5>iOS</h5>
+
+<ul>
+<li>Xcode &gt;= 4.3.1</li>
+</ul><h5>Android</h5>
+
+<ul>
+<li>Android NDK</li>
+</ul><h3>How to</h3>
+
+<h4>iOS</h4>
+
+<pre><code>cd spidermonkey/js/src
+autoconf213
+cd build-ios
+sh build_ios_fat.sh
+file libjs_static.a
+&gt; libjs_static.a: Mach-O universal binary with 2 architectures
+&gt; libjs_static.a (for architecture i386):   current ar archive random library
+&gt; libjs_static.a (for architecture armv7):  current ar archive random library
+</code></pre>
+
+<p>After that you would get a fat (i386 + armv7) library named libjs_static.a and a directory named dist, full of symlinks. To use that you can just cp -RL the dist directory and place it wherever you want:</p>
+
+<pre><code>cp -RL dist ~/Desktop/testmonkey/libs/spidermonkey
+</code></pre>
+
+<p>Then, in your iOS app, make sure you add the right header search path (libs/spidermonkey/include) and lib search path (libs/spidermonkey/libs) and add the linker flag "-ljs_static".</p>
+
+<h4>Android</h4>
+
+<pre><code>&gt; mkdir mozilla &amp;&amp; cd mozilla
+&gt; git clone git://github.com/folecr/spidermonkey.git
+&gt; cd spidermonkey/js/src
+&gt; autoconf213
+&gt; cd build-android
+&gt; sh build.sh
+</code></pre>
+
+<p>Produces a static ARM library in </p>
+
+<pre><code>mozilla/spidermonkey/dist/lib
+</code></pre>
+
+<p>Include files are in </p>
+
+<pre><code>mozilla/spidermonkey/dist/include
+</code></pre>
+
+<p>Android NDK module is at</p>
+
+<pre><code>mozilla/spidermonkey/android/Android.mk
+</code></pre>
+
+<p>You can now use this module in your Android NDK project by including this in your Application.mk</p>
+
+<pre><code>$(call import-module,spidermonkey/android)
+</code></pre>
+
+<p>and adding the path to the mozilla directory to NDK_MODULE_PATH</p>
+
+<pre><code>NDK_MODULE_PATH=mozilla
+</code></pre>
+
+<p>For an example application that will run JavaScript scripts on your Android device see <a href="http://folecr.github.com/hellojs-android">http://folecr.github.com/hellojs-android</a>.</p>
+
+<p>Enjoy!</p>
+
+<h2>Authors and contributors</h2>
+
+<ul>
+<li>
+<a href="https://github.com/funkaster" class="user-mention">@funkaster</a> (iOS)</li>
+<li>
+<a href="https://github.com/folecr" class="user-mention">@folecr</a> (Android)</li>
+<li>The Mozilla SpiderMonkey team (duh)</li>
+</ul>
+      </section>
+      <footer>
+        <p>This project is maintained by <a href="https://github.com/funkaster">funkaster</a></p>
+        <p><small>Hosted on GitHub Pages &mdash; Theme by <a href="https://github.com/orderedlist">orderedlist</a></small></p>
+      </footer>
+    </div>
+    <script src="javascripts/scale.fix.js"></script>
+    
+  </body>
+</html>
