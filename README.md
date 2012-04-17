@@ -26,6 +26,15 @@ http://folecr.github.com/hellojs-android
 
 #### iOS
 
+##### Precompiled version
+
+* Download the [precompiled](https://github.com/downloads/funkaster/spidermonkey/spidermonkey-ios.zip) version
+* Uncompress and place the files inside a 'libs' directory in your project (or anywhere you want)
+* Add the proper header and libs search path to your target
+* Also add the "-ljs_static" linker flag
+
+##### Compile your own version
+
     cd spidermonkey/js/src
     autoconf213
     cd build-ios
