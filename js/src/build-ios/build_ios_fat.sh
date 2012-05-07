@@ -16,7 +16,7 @@ lipo -create -output libjs_static.a libjs_static_i386.a libjs_static_armv7.a
 strip -S libjs_static.a
 
 # create dist build
-if [ -n "$DISTRIBUTION" ]
+if [ -n "$DISTRIBUTION" ]; then
 	cp -RL dist spidermonkey-ios
 	zip -r spidermonkey-ios.zip spidermonkey-ios
 	rm -rf spidermonkey-ios
