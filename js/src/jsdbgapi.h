@@ -1,43 +1,9 @@
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
  * vim: set ts=8 sw=4 et tw=99:
  *
- * ***** BEGIN LICENSE BLOCK *****
- * Version: MPL 1.1/GPL 2.0/LGPL 2.1
- *
- * The contents of this file are subject to the Mozilla Public License Version
- * 1.1 (the "License"); you may not use this file except in compliance with
- * the License. You may obtain a copy of the License at
- * http://www.mozilla.org/MPL/
- *
- * Software distributed under the License is distributed on an "AS IS" basis,
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
- * for the specific language governing rights and limitations under the
- * License.
- *
- * The Original Code is Mozilla Communicator client code, released
- * March 31, 1998.
- *
- * The Initial Developer of the Original Code is
- * Netscape Communications Corporation.
- * Portions created by the Initial Developer are Copyright (C) 1998
- * the Initial Developer. All Rights Reserved.
- *
- * Contributor(s):
- *   Nick Fitzgerald <nfitzgerald@mozilla.com>
- *
- * Alternatively, the contents of this file may be used under the terms of
- * either of the GNU General Public License Version 2 or later (the "GPL"),
- * or the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
- * in which case the provisions of the GPL or the LGPL are applicable instead
- * of those above. If you wish to allow use of your version of this file only
- * under the terms of either the GPL or the LGPL, and not to allow others to
- * use your version of this file under the terms of the MPL, indicate your
- * decision by deleting the provisions above and replace them with the notice
- * and other provisions required by the GPL or the LGPL. If you do not delete
- * the provisions above, a recipient may use your version of this file under
- * the terms of any one of the MPL, the GPL or the LGPL.
- *
- * ***** END LICENSE BLOCK ***** */
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #ifndef jsdbgapi_h___
 #define jsdbgapi_h___
@@ -91,6 +57,7 @@ JS_FRIEND_API(void) js_DumpValue(const js::Value &val);
 JS_FRIEND_API(void) js_DumpId(jsid id);
 JS_FRIEND_API(void) js_DumpStackFrame(JSContext *cx, js::StackFrame *start = NULL);
 #endif
+JS_FRIEND_API(void) js_DumpBacktrace(JSContext *cx);
 
 JS_BEGIN_EXTERN_C
 #endif
@@ -118,6 +85,13 @@ JS_SetRuntimeDebugMode(JSRuntime *rt, JSBool debug);
 /* Get current state of debugging mode. */
 extern JS_PUBLIC_API(JSBool)
 JS_GetDebugMode(JSContext *cx);
+
+/*
+ * Turn on/off debugging mode for all compartments. This returns false if any code
+ * from any of the runtime's compartments is running or on the stack.
+ */
+JS_FRIEND_API(JSBool)
+JS_SetDebugModeForAllCompartments(JSContext *cx, JSBool debug);
 
 /*
  * Turn on/off debugging mode for a single compartment. This should only be
@@ -220,10 +194,10 @@ extern JS_PUBLIC_API(JSNative)
 JS_GetFunctionNative(JSContext *cx, JSFunction *fun);
 
 extern JS_PUBLIC_API(JSPrincipals *)
-JS_GetScriptPrincipals(JSContext *cx, JSScript *script);
+JS_GetScriptPrincipals(JSScript *script);
 
 extern JS_PUBLIC_API(JSPrincipals *)
-JS_GetScriptOriginPrincipals(JSContext *cx, JSScript *script);
+JS_GetScriptOriginPrincipals(JSScript *script);
 
 /*
  * Stack Frame Iterator
@@ -240,12 +214,6 @@ JS_GetFrameScript(JSContext *cx, JSStackFrame *fp);
 
 extern JS_PUBLIC_API(jsbytecode *)
 JS_GetFramePC(JSContext *cx, JSStackFrame *fp);
-
-/*
- * Get the closest scripted frame below fp.  If fp is null, start from cx->fp.
- */
-extern JS_PUBLIC_API(JSStackFrame *)
-JS_GetScriptedCaller(JSContext *cx, JSStackFrame *fp);
 
 extern JS_PUBLIC_API(void *)
 JS_GetFrameAnnotation(JSContext *cx, JSStackFrame *fp);
@@ -298,38 +266,20 @@ JS_SetFrameReturnValue(JSContext *cx, JSStackFrame *fp, jsval rval);
  * Return fp's callee function object (fp->callee) if it has one. Note that
  * this API cannot fail. A null return means "no callee": fp is a global or
  * eval-from-global frame, not a call frame.
- *
- * This API began life as an infallible getter, but now it can return either:
- *
- * 1. An optimized closure that was compiled assuming the function could not
- *    escape and be called from sites the compiler could not see.
- *
- * 2. A "joined function object", an optimization whereby SpiderMonkey avoids
- *    creating fresh function objects for every evaluation of a function
- *    expression that is used only once by a consumer that either promises to
- *    clone later when asked for the value or that cannot leak the value.
- *
- * Because Mozilla's Gecko embedding of SpiderMonkey (and no doubt other
- * embeddings) calls this API in potentially performance-sensitive ways (e.g.
- * in nsContentUtils::GetDocumentFromCaller), we are leaving this API alone. It
- * may now return an unwrapped non-escaping optimized closure, or a joined
- * function object. Such optimized objects may work well if called from the
- * correct context, never mutated or compared for identity, etc.
- *
- * However, if you really need to get the same callee object that JS code would
- * see, which means undoing the optimizations, where an undo attempt can fail,
- * then use JS_GetValidFrameCalleeObject.
  */
 extern JS_PUBLIC_API(JSObject *)
 JS_GetFrameCalleeObject(JSContext *cx, JSStackFrame *fp);
 
-/**
- * Return fp's callee function object after running the deferred closure
- * cloning "method read barrier". This API can fail! If the frame has no
- * callee, this API returns true with JSVAL_IS_VOID(*vp).
+/************************************************************************/
+
+/*
+ * This is almost JS_GetClass(obj)->name except that certain debug-only
+ * proxies are made transparent. In particular, this function turns the class
+ * of any scope (returned via JS_GetFrameScopeChain or JS_GetFrameCalleeObject)
+ * from "Proxy" to "Call", "Block", "With" etc.
  */
-extern JS_PUBLIC_API(JSBool)
-JS_GetValidFrameCalleeObject(JSContext *cx, JSStackFrame *fp, jsval *vp);
+extern JS_PUBLIC_API(const char *)
+JS_GetDebugClassName(JSObject *obj);
 
 /************************************************************************/
 
@@ -407,13 +357,6 @@ typedef struct JSPropertyDescArray {
 } JSPropertyDescArray;
 
 typedef struct JSScopeProperty JSScopeProperty;
-
-extern JS_PUBLIC_API(JSScopeProperty *)
-JS_PropertyIterator(JSObject *obj, JSScopeProperty **iteratorp);
-
-extern JS_PUBLIC_API(JSBool)
-JS_GetPropertyDesc(JSContext *cx, JSObject *obj, JSScopeProperty *shape,
-                   JSPropertyDesc *pd);
 
 extern JS_PUBLIC_API(JSBool)
 JS_GetPropertyDescArray(JSContext *cx, JSObject *obj, JSPropertyDescArray *pda);
@@ -566,6 +509,16 @@ js_ResumeVtune();
 
 #endif /* MOZ_VTUNE */
 
+#ifdef __linux__
+
+extern JS_FRIEND_API(JSBool)
+js_StartPerf();
+
+extern JS_FRIEND_API(JSBool)
+js_StopPerf();
+
+#endif /* __linux__ */
+
 extern JS_PUBLIC_API(void)
 JS_DumpBytecode(JSContext *cx, JSScript *script);
 
@@ -580,6 +533,13 @@ JS_DumpCompartmentPCCounts(JSContext *cx);
 
 extern JS_PUBLIC_API(JSObject *)
 JS_UnwrapObject(JSObject *obj);
+
+extern JS_PUBLIC_API(JSObject *)
+JS_UnwrapObjectAndInnerize(JSObject *obj);
+
+/* Call the context debug handler on the topmost scripted frame. */
+extern JS_FRIEND_API(JSBool)
+js_CallContextDebugHandler(JSContext *cx);
 
 JS_END_EXTERN_C
 

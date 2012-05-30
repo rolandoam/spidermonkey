@@ -1,41 +1,8 @@
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
  *
- * ***** BEGIN LICENSE BLOCK *****
- * Version: MPL 1.1/GPL 2.0/LGPL 2.1
- *
- * The contents of this file are subject to the Mozilla Public License Version
- * 1.1 (the "License"); you may not use this file except in compliance with
- * the License. You may obtain a copy of the License at
- * http://www.mozilla.org/MPL/
- *
- * Software distributed under the License is distributed on an "AS IS" basis,
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
- * for the specific language governing rights and limitations under the
- * License.
- *
- * The Original Code is Mozilla Communicator client code, released
- * March 31, 1998.
- *
- * The Initial Developer of the Original Code is
- * Netscape Communications Corporation.
- * Portions created by the Initial Developer are Copyright (C) 1998
- * the Initial Developer. All Rights Reserved.
- *
- * Contributor(s):
- *
- * Alternatively, the contents of this file may be used under the terms of
- * either of the GNU General Public License Version 2 or later (the "GPL"),
- * or the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
- * in which case the provisions of the GPL or the LGPL are applicable instead
- * of those above. If you wish to allow use of your version of this file only
- * under the terms of either the GPL or the LGPL, and not to allow others to
- * use your version of this file under the terms of the MPL, indicate your
- * decision by deleting the provisions above and replace them with the notice
- * and other provisions required by the GPL or the LGPL. If you do not delete
- * the provisions above, a recipient may use your version of this file under
- * the terms of any one of the MPL, the GPL or the LGPL.
- *
- * ***** END LICENSE BLOCK ***** */
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #ifndef jsarray_h___
 #define jsarray_h___
@@ -72,28 +39,6 @@ js_IdIsIndex(jsid id, uint32_t *indexp)
 
     return js::StringIsArrayIndex(JSID_TO_ATOM(id), indexp);
 }
-
-/*
- * Dense arrays are not native -- aobj->isNative() for a dense array aobj
- * results in false, meaning aobj->map does not point to a js::Shape.
- *
- * But Array methods are called via aobj.sort(), e.g., and the interpreter and
- * the trace recorder must consult the property cache in order to perform well.
- * The cache works only for native objects.
- *
- * Therefore the interpreter (js_Interpret in JSOP_GETPROP and JSOP_CALLPROP)
- * and js_GetPropertyHelper use this inline function to skip up one link in the
- * prototype chain when obj is a dense array, in order to find a native object
- * (to wit, Array.prototype) in which to probe for cached methods.
- *
- * Note that setting aobj.__proto__ for a dense array aobj turns aobj into a
- * slow array, avoiding the neede to skip.
- *
- * Callers of js_GetProtoIfDenseArray must take care to use the original object
- * (obj) for the |this| value of a getter, setter, or method call (bug 476447).
- */
-inline JSObject *
-js_GetProtoIfDenseArray(JSObject *obj);
 
 extern JSObject *
 js_InitArrayClass(JSContext *cx, JSObject *obj);
@@ -145,11 +90,11 @@ js_SetLengthProperty(JSContext *cx, JSObject *obj, double length);
 namespace js {
 
 extern JSBool
-array_defineElement(JSContext *cx, JSObject *obj, uint32_t index, const Value *value,
+array_defineElement(JSContext *cx, HandleObject obj, uint32_t index, const Value *value,
                     PropertyOp getter, StrictPropertyOp setter, unsigned attrs);
 
 extern JSBool
-array_deleteElement(JSContext *cx, JSObject *obj, uint32_t index, Value *rval, JSBool strict);
+array_deleteElement(JSContext *cx, HandleObject obj, uint32_t index, Value *rval, JSBool strict);
 
 /*
  * Copy 'length' elements from aobj to vp.
@@ -158,7 +103,7 @@ array_deleteElement(JSContext *cx, JSObject *obj, uint32_t index, Value *rval, J
  * js_GetLengthProperty on aobj.
  */
 extern bool
-GetElements(JSContext *cx, JSObject *aobj, uint32_t length, js::Value *vp);
+GetElements(JSContext *cx, HandleObject aobj, uint32_t length, js::Value *vp);
 
 /* Natives exposed for optimization by the interpreter and JITs. */
 
@@ -192,7 +137,7 @@ js_ArrayInfo(JSContext *cx, unsigned argc, jsval *vp);
  * sparse, which requires that the array be completely filled.)
  */
 extern JSBool
-js_NewbornArrayPush(JSContext *cx, JSObject *obj, const js::Value &v);
+js_NewbornArrayPush(JSContext *cx, js::HandleObject obj, const js::Value &v);
 
 JSBool
 js_PrototypeHasIndexedProperties(JSContext *cx, JSObject *obj);

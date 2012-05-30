@@ -1,46 +1,15 @@
 /* -*- Mode: c++; c-basic-offset: 4; tab-width: 40; indent-tabs-mode: nil -*- */
 /* vim: set ts=40 sw=4 et tw=99: */
-/* ***** BEGIN LICENSE BLOCK *****
- * Version: MPL 1.1/GPL 2.0/LGPL 2.1
- *
- * The contents of this file are subject to the Mozilla Public License Version
- * 1.1 (the "License"); you may not use this file except in compliance with
- * the License. You may obtain a copy of the License at
- * http://www.mozilla.org/MPL/
- *
- * Software distributed under the License is distributed on an "AS IS" basis,
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
- * for the specific language governing rights and limitations under the
- * License.
- *
- * The Original Code is the Mozilla SpiderMonkey bytecode analysis
- *
- * The Initial Developer of the Original Code is
- *   Mozilla Foundation
- * Portions created by the Initial Developer are Copyright (C) 2010
- * the Initial Developer. All Rights Reserved.
- *
- * Contributor(s):
- *
- * Alternatively, the contents of this file may be used under the terms of
- * either of the GNU General Public License Version 2 or later (the "GPL"),
- * or the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
- * in which case the provisions of the GPL or the LGPL are applicable instead
- * of those above. If you wish to allow use of your version of this file only
- * under the terms of either the GPL or the LGPL, and not to allow others to
- * use your version of this file under the terms of the MPL, indicate your
- * decision by deleting the provisions above and replace them with the notice
- * and other provisions required by the GPL or the LGPL. If you do not delete
- * the provisions above, a recipient may use your version of this file under
- * the terms of any one of the MPL, the GPL or the LGPL.
- *
- * ***** END LICENSE BLOCK ***** */
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 /* Definitions for javascript analysis. */
 
 #ifndef jsanalyze_h___
 #define jsanalyze_h___
 
+#include "jsautooplen.h"
 #include "jscompartment.h"
 #include "jscntxt.h"
 #include "jsinfer.h"
@@ -48,6 +17,7 @@
 
 #include "ds/LifoAlloc.h"
 #include "js/TemplateLib.h"
+#include "vm/ScopeObject.h"
 
 struct JSScript;
 
@@ -121,6 +91,9 @@ class Bytecode
 
     /* Whether this is in a try block. */
     bool inTryBlock : 1;
+
+    /* Whether this is in a loop. */
+    bool inLoop : 1;
 
     /* Method JIT safe point. */
     bool safePoint : 1;
@@ -253,9 +226,6 @@ ExtendedDef(jsbytecode *pc)
       case JSOP_ARGINC:
       case JSOP_ARGDEC:
       case JSOP_SETLOCAL:
-      case JSOP_SETLOCALPOP:
-      case JSOP_DEFLOCALFUN:
-      case JSOP_DEFLOCALFUN_FC:
       case JSOP_INCLOCAL:
       case JSOP_DECLOCAL:
       case JSOP_LOCALINC:
@@ -383,14 +353,22 @@ static inline uint32_t GetBytecodeSlot(JSScript *script, jsbytecode *pc)
       case JSOP_GETLOCAL:
       case JSOP_CALLLOCAL:
       case JSOP_SETLOCAL:
-      case JSOP_SETLOCALPOP:
-      case JSOP_DEFLOCALFUN:
-      case JSOP_DEFLOCALFUN_FC:
       case JSOP_INCLOCAL:
       case JSOP_DECLOCAL:
       case JSOP_LOCALINC:
       case JSOP_LOCALDEC:
         return LocalSlot(script, GET_SLOTNO(pc));
+
+      case JSOP_GETALIASEDVAR:
+      case JSOP_CALLALIASEDVAR:
+      case JSOP_SETALIASEDVAR:
+      {
+          ScopeCoordinate sc = ScopeCoordinate(pc);
+          return script->bindings.bindingIsArg(sc.binding)
+                 ? ArgSlot(script->bindings.bindingToArg(sc.binding))
+                 : LocalSlot(script, script->bindings.bindingToLocal(sc.binding));
+      }
+
 
       case JSOP_THIS:
         return ThisSlot();
@@ -408,9 +386,6 @@ BytecodeUpdatesSlot(JSOp op)
     switch (op) {
       case JSOP_SETARG:
       case JSOP_SETLOCAL:
-      case JSOP_SETLOCALPOP:
-      case JSOP_DEFLOCALFUN:
-      case JSOP_DEFLOCALFUN_FC:
       case JSOP_INCARG:
       case JSOP_DECARG:
       case JSOP_ARGINC:
@@ -605,7 +580,7 @@ struct LifetimeVariable
         return offset;
     }
 
-#ifdef DEBUG
+#ifdef JS_METHODJIT_SPEW
     void print() const;
 #endif
 };
@@ -833,6 +808,8 @@ class SlotValue
     SlotValue(uint32_t slot, const SSAValue &value) : slot(slot), value(value) {}
 };
 
+struct NeedsArgsObjState;
+
 /* Analysis information about a script. */
 class ScriptAnalysis
 {
@@ -871,7 +848,7 @@ class ScriptAnalysis
     bool addsScopeObjects_:1;
     bool localsAliasStack_:1;
     bool isInlineable:1;
-    bool isCompileable:1;
+    bool isJaegerCompileable:1;
     bool canTrackVars:1;
 
     uint32_t numReturnSites_;
@@ -882,12 +859,12 @@ class ScriptAnalysis
 
   public:
 
-    ScriptAnalysis(JSScript *script) { 
+    ScriptAnalysis(JSScript *script) {
         PodZero(this);
         this->script = script;
 #ifdef DEBUG
         this->originalDebugMode_ = script->compartment()->debugMode();
-#endif        
+#endif
     }
 
     bool ranBytecode() { return ranBytecode_; }
@@ -906,7 +883,7 @@ class ScriptAnalysis
     bool OOM() { return outOfMemory; }
     bool failed() { return hadFailure; }
     bool inlineable(uint32_t argc) { return isInlineable && argc == script->function()->nargs; }
-    bool compileable() { return isCompileable; }
+    bool jaegerCompileable() { return isJaegerCompileable; }
 
     /* Whether there are POPV/SETRVAL bytecodes which can write to the frame's rval. */
     bool usesReturnValue() const { return usesReturnValue_; }
@@ -1072,7 +1049,7 @@ class ScriptAnalysis
     bool trackUseChain(const SSAValue &v) {
         JS_ASSERT_IF(v.kind() == SSAValue::VAR, trackSlot(v.varSlot()));
         return v.kind() != SSAValue::EMPTY &&
-            (v.kind() != SSAValue::VAR || !v.varInitial());
+               (v.kind() != SSAValue::VAR || !v.varInitial());
     }
 
     /*
@@ -1133,7 +1110,7 @@ class ScriptAnalysis
      * presence of NAME opcodes which could alias local variables or arguments
      * keeps us from tracking variable values at each point.
      */
-    bool trackSlot(uint32_t slot) { return !slotEscapes(slot) && canTrackVars; }
+    bool trackSlot(uint32_t slot) { return !slotEscapes(slot) && canTrackVars && slot < 1000; }
 
     const LifetimeVariable & liveness(uint32_t slot) {
         JS_ASSERT(script->compartment()->activeAnalysis);
@@ -1175,9 +1152,8 @@ class ScriptAnalysis
 
     /* Bytecode helpers */
     inline bool addJump(JSContext *cx, unsigned offset,
-                        unsigned *currentOffset, unsigned *forwardJump,
+                        unsigned *currentOffset, unsigned *forwardJump, unsigned *forwardLoop,
                         unsigned stackDepth);
-    void checkAliasedName(JSContext *cx, jsbytecode *pc);
 
     /* Lifetime helpers */
     inline void addVariable(JSContext *cx, LifetimeVariable &var, unsigned offset,
@@ -1230,8 +1206,9 @@ class ScriptAnalysis
 
     /* Type inference helpers */
     bool analyzeTypesBytecode(JSContext *cx, unsigned offset, TypeInferenceState &state);
-    bool followEscapingArguments(JSContext *cx, const SSAValue &v, Vector<SSAValue> *seen);
-    bool followEscapingArguments(JSContext *cx, SSAUseChain *use, Vector<SSAValue> *seen);
+    bool needsArgsObj(NeedsArgsObjState &state, const SSAValue &v);
+    bool needsArgsObj(NeedsArgsObjState &state, SSAUseChain *use);
+    bool needsArgsObj(JSContext *cx);
 
   public:
 #ifdef DEBUG

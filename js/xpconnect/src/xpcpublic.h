@@ -1,41 +1,9 @@
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
  * vim: set ts=8 sw=4 et tw=78:
  *
- * ***** BEGIN LICENSE BLOCK *****
- * Version: MPL 1.1/GPL 2.0/LGPL 2.1
- *
- * The contents of this file are subject to the Mozilla Public License Version
- * 1.1 (the "License"); you may not use this file except in compliance with
- * the License. You may obtain a copy of the License at
- * http://www.mozilla.org/MPL/
- *
- * Software distributed under the License is distributed on an "AS IS" basis,
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
- * for the specific language governing rights and limitations under the
- * License.
- *
- * The Original Code is Mozilla XPConnect  code, released
- * June 30, 2009.
- *
- * The Initial Developer of the Original Code is
- *    The Mozilla Foundation
- *
- * Contributor(s):
- *    Andreas Gal <gal@mozilla.com>
- *
- * Alternatively, the contents of this file may be used under the terms of
- * either of the GNU General Public License Version 2 or later (the "GPL"),
- * or the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
- * in which case the provisions of the GPL or the LGPL are applicable instead
- * of those above. If you wish to allow use of your version of this file only
- * under the terms of either the GPL or the LGPL, and not to allow others to
- * use your version of this file under the terms of the MPL, indicate your
- * decision by deleting the provisions above and replace them with the notice
- * and other provisions required by the GPL or the LGPL. If you do not delete
- * the provisions above, a recipient may use your version of this file under
- * the terms of any one of the MPL, the GPL or the LGPL.
- *
- * ***** END LICENSE BLOCK ***** */
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #ifndef xpcpublic_h
 #define xpcpublic_h
@@ -53,10 +21,11 @@
 #include "nsWrapperCache.h"
 #include "nsStringGlue.h"
 #include "nsTArray.h"
+#include "mozilla/dom/DOMJSClass.h"
 
 class nsIPrincipal;
 class nsIXPConnectWrappedJS;
-struct nsDOMClassInfoData;
+class nsScriptNameSpaceManager;
 
 #ifndef BAD_TLS_INDEX
 #define BAD_TLS_INDEX ((PRUint32) -1)
@@ -74,9 +43,9 @@ xpc_CreateMTGlobalObject(JSContext *cx, JSClass *clasp,
                          JSCompartment **compartment);
 
 #define XPCONNECT_GLOBAL_FLAGS                                                \
-    JSCLASS_XPCONNECT_GLOBAL | JSCLASS_HAS_PRIVATE |                          \
+    JSCLASS_DOM_GLOBAL | JSCLASS_XPCONNECT_GLOBAL | JSCLASS_HAS_PRIVATE |     \
     JSCLASS_PRIVATE_IS_NSISUPPORTS | JSCLASS_IMPLEMENTS_BARRIERS |            \
-    JSCLASS_GLOBAL_FLAGS_WITH_SLOTS(1)
+    JSCLASS_GLOBAL_FLAGS_WITH_SLOTS(3)
 
 void
 TraceXPCGlobal(JSTracer *trc, JSObject *obj);
@@ -138,9 +107,9 @@ xpc_FastGetCachedWrapper(nsWrapperCache *cache, JSObject *scope, jsval *vp)
     if (cache) {
         JSObject* wrapper = cache->GetWrapper();
         NS_ASSERTION(!wrapper ||
-                     !cache->IsProxy() ||
+                     !cache->IsDOMBinding() ||
                      !IS_SLIM_WRAPPER(wrapper),
-                     "Should never have a slim wrapper when IsProxy()");
+                     "Should never have a slim wrapper when IsDOMBinding()");
         if (wrapper &&
             js::GetObjectCompartment(wrapper) == js::GetObjectCompartment(scope) &&
             (IS_SLIM_WRAPPER(wrapper) ||
@@ -151,13 +120,6 @@ xpc_FastGetCachedWrapper(nsWrapperCache *cache, JSObject *scope, jsval *vp)
     }
 
     return nsnull;
-}
-
-inline JSObject*
-xpc_FastGetCachedWrapper(nsWrapperCache *cache, JSObject *scope)
-{
-    jsval dummy;
-    return xpc_FastGetCachedWrapper(cache, scope, &dummy);
 }
 
 // The JS GC marks objects gray that are held alive directly or
@@ -176,29 +138,66 @@ xpc_GCThingIsGrayCCThing(void *thing);
 
 // Implemented in nsXPConnect.cpp.
 extern void
-xpc_UnmarkGrayObjectRecursive(JSObject* obj);
+xpc_UnmarkGrayGCThingRecursive(void *thing, JSGCTraceKind kind);
 
 // Remove the gray color from the given JSObject and any other objects that can
 // be reached through it.
-inline void
+inline JSObject *
 xpc_UnmarkGrayObject(JSObject *obj)
 {
     if (obj) {
         if (xpc_IsGrayGCThing(obj))
-            xpc_UnmarkGrayObjectRecursive(obj);
+            xpc_UnmarkGrayGCThingRecursive(obj, JSTRACE_OBJECT);
         else if (js::IsIncrementalBarrierNeededOnObject(obj))
             js::IncrementalReferenceBarrier(obj);
     }
+    return obj;
 }
+
+inline JSScript *
+xpc_UnmarkGrayScript(JSScript *script)
+{
+    if (script) {
+        if (xpc_IsGrayGCThing(script))
+            xpc_UnmarkGrayGCThingRecursive(script, JSTRACE_SCRIPT);
+        else if (js::IsIncrementalBarrierNeededOnScript(script))
+            js::IncrementalReferenceBarrier(script);
+    }
+    return script;
+}
+
+inline JSContext *
+xpc_UnmarkGrayContext(JSContext *cx)
+{
+    if (cx) {
+        JSObject *global = JS_GetGlobalObject(cx);
+        xpc_UnmarkGrayObject(global);
+        if (global && JS_IsInRequest(JS_GetRuntime(cx))) {
+            JSObject *scope = JS_GetGlobalForScopeChain(cx);
+            if (scope != global)
+                xpc_UnmarkGrayObject(scope);
+        }
+    }
+    return cx;
+}
+
+#ifdef __cplusplus
+class XPCAutoRequest : public JSAutoRequest {
+public:
+    XPCAutoRequest(JSContext *cx) : JSAutoRequest(cx) {
+        xpc_UnmarkGrayContext(cx);
+    }
+};
+#endif
 
 // If aVariant is an XPCVariant, this marks the object to be in aGeneration.
 // This also unmarks the gray JSObject.
 extern void
 xpc_MarkInCCGeneration(nsISupports* aVariant, PRUint32 aGeneration);
 
-// Unmarks aWrappedJS's JSObject.
+// If aWrappedJS is a JS wrapper, unmark its JSObject.
 extern void
-xpc_UnmarkGrayObject(nsIXPConnectWrappedJS* aWrappedJS);
+xpc_TryUnmarkWrappedGrayObject(nsISupports* aWrappedJS);
 
 extern void
 xpc_UnmarkSkippableJSHolders();
@@ -207,6 +206,8 @@ xpc_UnmarkSkippableJSHolders();
 // xpcshell.
 NS_EXPORT_(void)
 xpc_ActivateDebugMode();
+
+class nsIMemoryMultiReporterCallback;
 
 namespace xpc {
 
@@ -222,16 +223,35 @@ bool Base64Decode(JSContext *cx, JS::Value val, JS::Value *out);
 bool StringToJsval(JSContext *cx, nsAString &str, JS::Value *rval);
 bool NonVoidStringToJsval(JSContext *cx, nsAString &str, JS::Value *rval);
 
+nsIPrincipal *GetCompartmentPrincipal(JSCompartment *compartment);
+
 #ifdef DEBUG
 void DumpJSHeap(FILE* file);
 #endif
-} // namespace xpc
 
-class nsIMemoryMultiReporterCallback;
+void SetLocationForGlobal(JSObject *global, const nsACString& location);
+void SetLocationForGlobal(JSObject *global, nsIURI *locationURI);
 
-namespace mozilla {
-namespace xpconnect {
-namespace memory {
+/**
+ * Define quick stubs on the given object, @a proto.
+ *
+ * @param cx
+ *     A context.  Requires request.
+ * @param proto
+ *     The (newly created) prototype object for a DOM class.  The JS half
+ *     of an XPCWrappedNativeProto.
+ * @param flags
+ *     Property flags for the quick stub properties--should be either
+ *     JSPROP_ENUMERATE or 0.
+ * @param interfaceCount
+ *     The number of interfaces the class implements.
+ * @param interfaceArray
+ *     The interfaces the class implements; interfaceArray and
+ *     interfaceCount are like what nsIClassInfo.getInterfaces returns.
+ */
+bool
+DOM_DefineQuickStubs(JSContext *cx, JSObject *proto, PRUint32 flags,
+                     PRUint32 interfaceCount, const nsIID **interfaceArray);
 
 // This reports all the stats in |rtStats| that belong in the "explicit" tree,
 // (which isn't all of them).
@@ -241,9 +261,68 @@ ReportJSRuntimeExplicitTreeStats(const JS::RuntimeStats &rtStats,
                                  nsIMemoryMultiReporterCallback *cb,
                                  nsISupports *closure);
 
-} // namespace memory
-} // namespace xpconnect
+/**
+ * Convert a jsval to PRInt64. Return true on success.
+ */
+inline bool
+ValueToInt64(JSContext *cx, JS::Value v, int64_t *result)
+{
+    if (JSVAL_IS_INT(v)) {
+        int32_t intval;
+        if (!JS_ValueToECMAInt32(cx, v, &intval))
+            return false;
+        *result = static_cast<int64_t>(intval);
+    } else {
+        double doubleval;
+        if (!JS_ValueToNumber(cx, v, &doubleval))
+            return false;
+        *result = static_cast<int64_t>(doubleval);
+    }
+    return true;
+}
 
+/**
+ * Convert a jsval to uint64_t. Return true on success.
+ */
+inline bool
+ValueToUint64(JSContext *cx, JS::Value v, uint64_t *result)
+{
+    if (JSVAL_IS_INT(v)) {
+        uint32_t intval;
+        if (!JS_ValueToECMAUint32(cx, v, &intval))
+            return false;
+        *result = static_cast<uint64_t>(intval);
+    } else {
+        double doubleval;
+        if (!JS_ValueToNumber(cx, v, &doubleval))
+            return false;
+        *result = static_cast<uint64_t>(doubleval);
+    }
+    return true;
+}
+
+/**
+ * Given an arbitrary object, Unwrap will return the wrapped object if the
+ * passed-in object is a wrapper that Unwrap knows about *and* the
+ * currently running code has permission to access both the wrapper and
+ * wrapped object.
+ *
+ * Since this is meant to be called from functions like
+ * XPCWrappedNative::GetWrappedNativeOfJSObject, it does not set an
+ * exception on |cx|.
+ */
+JSObject *
+Unwrap(JSContext *cx, JSObject *wrapper, bool stopAtOuter = true);
+
+/**
+ * Throws an exception on cx and returns false.
+ */
+bool
+Throw(JSContext *cx, nsresult rv);
+
+} // namespace xpc
+
+namespace mozilla {
 namespace dom {
 namespace binding {
 
@@ -254,24 +333,14 @@ inline bool instanceIsProxy(JSObject *obj)
     return js::IsProxy(obj) &&
            js::GetProxyHandler(obj)->family() == ProxyFamily();
 }
-extern JSClass ExpandoClass;
-inline bool isExpandoObject(JSObject *obj)
-{
-    return js::GetObjectJSClass(obj) == &ExpandoClass;
-}
 
-enum {
-    JSPROXYSLOT_PROTOSHAPE = 0,
-    JSPROXYSLOT_EXPANDO = 1
-};
-
-typedef JSObject*
-(*DefineInterface)(JSContext *cx, XPCWrappedNativeScope *scope, bool *enabled);
+typedef bool
+(*DefineInterface)(JSContext *cx, JSObject *global, bool *enabled);
 
 extern bool
 DefineStaticJSVals(JSContext *cx);
 void
-Register(nsDOMClassInfoData *aData);
+Register(nsScriptNameSpaceManager* aNameSpaceManager);
 extern bool
 DefineConstructor(JSContext *cx, JSObject *obj, DefineInterface aDefine,
                   nsresult *aResult);

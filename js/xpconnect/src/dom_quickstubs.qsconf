@@ -1,40 +1,7 @@
 # -*- Mode: Python -*-
-# ***** BEGIN LICENSE BLOCK *****
-# Version: MPL 1.1/GPL 2.0/LGPL 2.1
-#
-# The contents of this file are subject to the Mozilla Public License Version
-# 1.1 (the "License"); you may not use this file except in compliance with
-# the License. You may obtain a copy of the License at
-# http://www.mozilla.org/MPL/
-#
-# Software distributed under the License is distributed on an "AS IS" basis,
-# WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
-# for the specific language governing rights and limitations under the
-# License.
-#
-# The Original Code is mozilla.org code.
-#
-# The Initial Developer of the Original Code is
-#   Mozilla Foundation.
-# Portions created by the Initial Developer are Copyright (C) 2008
-# the Initial Developer. All Rights Reserved.
-#
-# Contributor(s):
-#   Jason Orendorff <jorendorff@mozilla.com>
-#
-# Alternatively, the contents of this file may be used under the terms of
-# either of the GNU General Public License Version 2 or later (the "GPL"),
-# or the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
-# in which case the provisions of the GPL or the LGPL are applicable instead
-# of those above. If you wish to allow use of your version of this file only
-# under the terms of either the GPL or the LGPL, and not to allow others to
-# use your version of this file under the terms of the MPL, indicate your
-# decision by deleting the provisions above and replace them with the notice
-# and other provisions required by the GPL or the LGPL. If you do not delete
-# the provisions above, a recipient may use your version of this file under
-# the terms of any one of the MPL, the GPL or the LGPL.
-#
-# ***** END LICENSE BLOCK *****
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 name = 'DOM'
 
@@ -97,6 +64,7 @@ members = [
     'nsIDOMTextMetrics.*',
     'nsIDOMCanvasGradient.*',
     'nsIDOMCanvasPattern.*',
+    'nsIDOMImageData.*',
 
     # dom/interfaces/core
     'nsIDOMCharacterData.data',
@@ -176,6 +144,7 @@ members = [
     'nsIDOMDOMTokenList.*',
     'nsIDOMDOMSettableTokenList.*',
     'nsIDOMXULDocument.getBoxObjectFor',
+    'nsIDOMMutationRecord.*',
 
     # dom/interfaces/css
     'nsIDOMElementCSSInlineStyle.*',
@@ -455,7 +424,6 @@ members = [
     'nsIIDBCursor.*',
     'nsIIDBCursorWithValue.*',
     'nsIIDBDatabase.*',
-    'nsIIDBDatabaseException.*',
     'nsIIDBIndex.*',
     'nsIIDBKeyRange.*',
     'nsIIDBObjectStore.*',
@@ -466,6 +434,11 @@ members = [
     'nsIIDBVersionChangeEvent.*',
     'nsIIndexedDatabaseUsageCallback.*',
     'nsIIndexedDatabaseManager.*',
+
+    # Performance
+    'nsIDOMPerformance.*',
+    'nsIDOMPerformanceTiming.*',
+    'nsIDOMPerformanceNavigation.*',
 
     'nsIDOMDOMError.*',
     ]
@@ -484,6 +457,7 @@ irregularFilenames = {
     'nsIDOMTextMetrics': 'nsIDOMCanvasRenderingContext2D',
     'nsIDOMCanvasGradient': 'nsIDOMCanvasRenderingContext2D',
     'nsIDOMCanvasPattern': 'nsIDOMCanvasRenderingContext2D',
+    'nsIDOMImageData': 'nsIDOMCanvasRenderingContext2D',
 
     'nsIDOMBlob': 'nsIDOMFile',
 
@@ -501,11 +475,14 @@ irregularFilenames = {
     'nsIWebGLExtensionStandardDerivatives' : 'nsIDOMWebGLRenderingContext',
     'nsIWebGLExtensionTextureFilterAnisotropic' : 'nsIDOMWebGLRenderingContext',
     'nsIWebGLExtensionLoseContext' : 'nsIDOMWebGLRenderingContext',
+    'nsIWebGLExtensionCompressedTextureS3TC' : 'nsIDOMWebGLRenderingContext',
 
     'nsIIndexedDatabaseUsageCallback': 'nsIIndexedDatabaseManager',
 
     'nsIDOMTouch': 'nsIDOMTouchEvent',
     'nsIDOMTouchList': 'nsIDOMTouchEvent',
+
+    'nsIDOMMutationRecord': 'nsIDOMMutationObserver',
 
     'nsITelephoneCallback': 'nsITelephone',
     }
@@ -524,6 +501,7 @@ customIncludes = [
     'nsSVGStylableElement.h',
     'nsHTMLDocument.h',
     'nsDOMQS.h',
+    'mozilla/dom/ImageData.h'
     ]
 
 customQuickStubs = [
@@ -534,6 +512,7 @@ customQuickStubs = [
 customReturnInterfaces = [
     'nsIDOMCanvasPattern',
     'nsIDOMCanvasGradient',
+    'nsIDOMImageData'
     ]
 
 nsIDOMNode_GetChildNodes_customMethodCallCode = """
@@ -974,34 +953,27 @@ customMethodCalls = {
         'unwrapThisFailureFatal' : False
         },
     # WebGL
-    'nsIDOMWebGLRenderingContext_BufferData': CUSTOM_QS,
-    'nsIDOMWebGLRenderingContext_BufferSubData': CUSTOM_QS,
-    'nsIDOMWebGLRenderingContext_ReadPixels': CUSTOM_QS,
     'nsIDOMWebGLRenderingContext_TexImage2D': CUSTOM_QS,
     'nsIDOMWebGLRenderingContext_TexSubImage2D': CUSTOM_QS,
-    'nsIDOMWebGLRenderingContext_CompressedTexImage2D': CUSTOM_QS,
-    'nsIDOMWebGLRenderingContext_CompressedTexSubImage2D': CUSTOM_QS,
-    'nsIDOMWebGLRenderingContext_Uniform1iv': CUSTOM_QS_TN,
-    'nsIDOMWebGLRenderingContext_Uniform2iv': CUSTOM_QS_TN,
-    'nsIDOMWebGLRenderingContext_Uniform3iv': CUSTOM_QS_TN,
-    'nsIDOMWebGLRenderingContext_Uniform4iv': CUSTOM_QS_TN,
-    'nsIDOMWebGLRenderingContext_Uniform1fv': CUSTOM_QS_TN,
-    'nsIDOMWebGLRenderingContext_Uniform2fv': CUSTOM_QS_TN,
-    'nsIDOMWebGLRenderingContext_Uniform3fv': CUSTOM_QS_TN,
-    'nsIDOMWebGLRenderingContext_Uniform4fv': CUSTOM_QS_TN,
-    'nsIDOMWebGLRenderingContext_UniformMatrix2fv': CUSTOM_QS_TN,
-    'nsIDOMWebGLRenderingContext_UniformMatrix3fv': CUSTOM_QS_TN,
-    'nsIDOMWebGLRenderingContext_UniformMatrix4fv': CUSTOM_QS_TN,
-    'nsIDOMWebGLRenderingContext_VertexAttrib1fv': CUSTOM_QS,
-    'nsIDOMWebGLRenderingContext_VertexAttrib2fv': CUSTOM_QS,
-    'nsIDOMWebGLRenderingContext_VertexAttrib3fv': CUSTOM_QS,
-    'nsIDOMWebGLRenderingContext_VertexAttrib4fv': CUSTOM_QS,
     # Canvas 2D
     'nsIDOMCanvasRenderingContext2D_CreateImageData': CUSTOM_QS,
-    'nsIDOMCanvasRenderingContext2D_GetImageData': CUSTOM_QS,
     'nsIDOMCanvasRenderingContext2D_PutImageData': CUSTOM_QS,
     # Nasty hack to make the ordering of |arc| and |arcTo| correct.
     # |arc| is not traceable because it has an optional argument.
     'nsIDOMCanvasRenderingContext2D_ArcTo' : { 'traceable' : False },
+
+    'nsIDOMImageData_GetWidth': {
+        'thisType': 'nsIDOMImageData',
+        'code': 'uint32_t result = static_cast<mozilla::dom::ImageData*>(self)->GetWidth();',
+        'canFail': False
+        },
+    'nsIDOMImageData_GetHeight': {
+        'thisType': 'nsIDOMImageData',
+        'code': 'uint32_t result = static_cast<mozilla::dom::ImageData*>(self)->GetHeight();',
+        'canFail': False
+        },
+    'nsIDOMImageData_GetData': {
+        'canFail': False
+        }
     }
 

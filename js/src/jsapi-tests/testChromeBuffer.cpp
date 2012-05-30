@@ -1,3 +1,7 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
 #include "tests.h"
 
 JSPrincipals system_principals = {
@@ -13,9 +17,7 @@ JSClass global_class = {
     JS_StrictPropertyStub,
     JS_EnumerateStub,
     JS_ResolveStub,
-    JS_ConvertStub,
-    JS_FinalizeStub,
-    JSCLASS_NO_OPTIONAL_MEMBERS
+    JS_ConvertStub
 };
 
 JS::Anchor<JSObject *> trusted_glob, trusted_fun;

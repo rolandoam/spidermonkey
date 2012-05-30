@@ -1,41 +1,8 @@
 /* -*- Mode: c++; c-basic-offset: 4; tab-width: 40; indent-tabs-mode: nil -*- */
 /* vim: set ts=40 sw=4 et tw=99: */
-/* ***** BEGIN LICENSE BLOCK *****
- * Version: MPL 1.1/GPL 2.0/LGPL 2.1
- *
- * The contents of this file are subject to the Mozilla Public License Version
- * 1.1 (the "License"); you may not use this file except in compliance with
- * the License. You may obtain a copy of the License at
- * http://www.mozilla.org/MPL/
- *
- * Software distributed under the License is distributed on an "AS IS" basis,
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
- * for the specific language governing rights and limitations under the
- * License.
- *
- * The Original Code is the Mozilla SpiderMonkey bytecode analysis
- *
- * The Initial Developer of the Original Code is
- *   Mozilla Foundation
- * Portions created by the Initial Developer are Copyright (C) 2010
- * the Initial Developer. All Rights Reserved.
- *
- * Contributor(s):
- *   Brian Hackett <bhackett@mozilla.com>
- *
- * Alternatively, the contents of this file may be used under the terms of
- * either of the GNU General Public License Version 2 or later (the "GPL"),
- * or the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
- * in which case the provisions of the GPL or the LGPL are applicable instead
- * of those above. If you wish to allow use of your version of this file only
- * under the terms of either the GPL or the LGPL, and not to allow others to
- * use your version of this file under the terms of the MPL, indicate your
- * decision by deleting the provisions above and replace them with the notice
- * and other provisions required by the GPL or the LGPL. If you do not delete
- * the provisions above, a recipient may use your version of this file under
- * the terms of any one of the MPL, the GPL or the LGPL.
- *
- * ***** END LICENSE BLOCK ***** */
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "jsanalyze.h"
 #include "jsautooplen.h"
@@ -71,7 +38,7 @@ PrintBytecode(JSContext *cx, JSScript *script, jsbytecode *pc)
 
 inline bool
 ScriptAnalysis::addJump(JSContext *cx, unsigned offset,
-                        unsigned *currentOffset, unsigned *forwardJump,
+                        unsigned *currentOffset, unsigned *forwardJump, unsigned *forwardLoop,
                         unsigned stackDepth)
 {
     JS_ASSERT(offset < script->length);
@@ -93,10 +60,26 @@ ScriptAnalysis::addJump(JSContext *cx, unsigned offset,
         /* Scripts containing loops are never inlined. */
         isInlineable = false;
 
-        /* Don't follow back edges to bytecode which has already been analyzed. */
-        if (!code->analyzed) {
+        if (code->analyzed) {
+            /*
+             * Backedge in a do-while loop, the body has been analyzed. Rewalk
+             * the body to set inLoop bits.
+             */
+            for (unsigned i = offset; i <= *currentOffset; i++) {
+                Bytecode *code = maybeCode(i);
+                if (code)
+                    code->inLoop = true;
+            }
+        } else {
+            /*
+             * Backedge in a while/for loop, whose body has not been analyzed
+             * due to a lack of fallthrough at the loop head. Roll back the
+             * offset to analyze the body.
+             */
             if (*forwardJump == 0)
                 *forwardJump = *currentOffset;
+            if (*forwardLoop == 0)
+                *forwardLoop = *currentOffset;
             *currentOffset = offset;
         }
     } else if (offset > *forwardJump) {
@@ -104,35 +87,6 @@ ScriptAnalysis::addJump(JSContext *cx, unsigned offset,
     }
 
     return true;
-}
-
-void
-ScriptAnalysis::checkAliasedName(JSContext *cx, jsbytecode *pc)
-{
-    /*
-     * Check to see if an accessed name aliases a local or argument in the
-     * current script, and mark that local/arg as escaping. We don't need to
-     * worry about marking locals/arguments in scripts this is nested in, as
-     * the escaping name will be caught by the parser and the nested local/arg
-     * will be marked as closed.
-     */
-
-    JSAtom *atom;
-    if (JSOp(*pc) == JSOP_DEFFUN) {
-        JSFunction *fun = script->getFunction(GET_UINT32_INDEX(pc));
-        atom = fun->atom;
-    } else {
-        JS_ASSERT(JOF_TYPE(js_CodeSpec[*pc].format) == JOF_ATOM);
-        atom = script->getAtom(GET_UINT32_INDEX(pc));
-    }
-
-    unsigned index;
-    BindingKind kind = script->bindings.lookup(cx, atom, &index);
-
-    if (kind == ARGUMENT)
-        escapedSlots[ArgSlot(index)] = true;
-    else if (kind == VARIABLE)
-        escapedSlots[LocalSlot(script, index)] = true;
 }
 
 void
@@ -162,26 +116,30 @@ ScriptAnalysis::analyzeBytecode(JSContext *cx)
      * other than through ARG* and LOCAL* opcodes (though arguments can still
      * be indirectly read but not written through 'arguments' properties).
      * All escaping locals are treated as having possible use-before-defs.
+     * Conservatively use 'hasArgsBinding' instead of 'needsArgsObj'
+     * (needsArgsObj requires SSA which requires escapedSlots).
      */
 
     PodZero(escapedSlots, numSlots);
 
-    if (script->usesEval || script->usesArguments || script->compartment()->debugMode()) {
+    if (script->bindingsAccessedDynamically || script->compartment()->debugMode() ||
+        script->argumentsHasLocalBinding())
+    {
         for (unsigned i = 0; i < nargs; i++)
             escapedSlots[ArgSlot(i)] = true;
     } else {
-        for (unsigned i = 0; i < script->nClosedArgs; i++) {
+        for (uint32_t i = 0; i < script->numClosedArgs(); i++) {
             unsigned arg = script->getClosedArg(i);
             JS_ASSERT(arg < nargs);
             escapedSlots[ArgSlot(arg)] = true;
         }
     }
 
-    if (script->usesEval || script->compartment()->debugMode()) {
+    if (script->bindingsAccessedDynamically || script->compartment()->debugMode()) {
         for (unsigned i = 0; i < script->nfixed; i++)
             escapedSlots[LocalSlot(script, i)] = true;
     } else {
-        for (uint32_t i = 0; i < script->nClosedVars; i++) {
+        for (uint32_t i = 0; i < script->numClosedVars(); i++) {
             unsigned local = script->getClosedVar(i);
             JS_ASSERT(local < script->nfixed);
             escapedSlots[LocalSlot(script, local)] = true;
@@ -197,16 +155,18 @@ ScriptAnalysis::analyzeBytecode(JSContext *cx)
 
     bool heavyweight = script->function() && script->function()->isHeavyweight();
 
-    isCompileable = true;
+    isJaegerCompileable = true;
 
     isInlineable = true;
-    if (script->nClosedArgs || script->nClosedVars || heavyweight ||
-        script->usesEval || script->usesArguments || cx->compartment->debugMode()) {
+    if (script->numClosedArgs() || script->numClosedVars() || heavyweight ||
+        script->bindingsAccessedDynamically || script->argumentsHasLocalBinding() ||
+        cx->compartment->debugMode())
+    {
         isInlineable = false;
     }
 
     modifiesArguments_ = false;
-    if (script->nClosedArgs || heavyweight)
+    if (script->numClosedArgs() || heavyweight)
         modifiesArguments_ = true;
 
     canTrackVars = true;
@@ -217,6 +177,9 @@ ScriptAnalysis::analyzeBytecode(JSContext *cx)
      * try/catch/finally blocks.
      */
     unsigned forwardJump = 0;
+
+    /* If we are in the middle of a loop, the offset of the highest backedge. */
+    unsigned forwardLoop = 0;
 
     /*
      * If we are in the middle of a try block, the offset of the highest
@@ -268,6 +231,16 @@ ScriptAnalysis::analyzeBytecode(JSContext *cx)
         if (!code) {
             /* Haven't found a path by which this bytecode is reachable. */
             continue;
+        }
+
+        /*
+         * Update info about bytecodes inside loops, which may have been
+         * analyzed before the backedge was seen.
+         */
+        if (forwardLoop) {
+            code->inLoop = true;
+            if (forwardLoop <= offset)
+                forwardLoop = 0;
         }
 
         if (code->analyzed) {
@@ -334,22 +307,31 @@ ScriptAnalysis::analyzeBytecode(JSContext *cx)
 
           case JSOP_QNAMEPART:
           case JSOP_QNAMECONST:
-            isCompileable = false;
+            isJaegerCompileable = false;
+            /* FALL THROUGH */
           case JSOP_NAME:
           case JSOP_CALLNAME:
           case JSOP_BINDNAME:
           case JSOP_SETNAME:
           case JSOP_DELNAME:
-            checkAliasedName(cx, pc);
             usesScopeChain_ = true;
             isInlineable = false;
+            break;
+
+          case JSOP_GETALIASEDVAR:
+          case JSOP_CALLALIASEDVAR:
+          case JSOP_SETALIASEDVAR:
+            JS_ASSERT(!isInlineable);
+            usesScopeChain_ = true;
+            /* XXX: this can be removed after bug 659577. */
+            if (ScopeCoordinate(pc).binding >= script->nfixed)
+                localsAliasStack_ = true;
             break;
 
           case JSOP_DEFFUN:
           case JSOP_DEFVAR:
           case JSOP_DEFCONST:
           case JSOP_SETCONST:
-            checkAliasedName(cx, pc);
             extendsScope_ = true;
             isInlineable = canTrackVars = false;
             break;
@@ -361,7 +343,7 @@ ScriptAnalysis::analyzeBytecode(JSContext *cx)
 
           case JSOP_ENTERWITH:
             addsScopeObjects_ = true;
-            isCompileable = isInlineable = canTrackVars = false;
+            isJaegerCompileable = isInlineable = canTrackVars = false;
             break;
 
           case JSOP_ENTERLET0:
@@ -391,7 +373,7 @@ ScriptAnalysis::analyzeBytecode(JSContext *cx)
             int32_t high = GET_JUMP_OFFSET(pc2);
             pc2 += JUMP_OFFSET_LEN;
 
-            if (!addJump(cx, defaultOffset, &nextOffset, &forwardJump, stackDepth))
+            if (!addJump(cx, defaultOffset, &nextOffset, &forwardJump, &forwardLoop, stackDepth))
                 return;
             getCode(defaultOffset).switchTarget = true;
             getCode(defaultOffset).safePoint = true;
@@ -399,7 +381,7 @@ ScriptAnalysis::analyzeBytecode(JSContext *cx)
             for (int32_t i = low; i <= high; i++) {
                 unsigned targetOffset = offset + GET_JUMP_OFFSET(pc2);
                 if (targetOffset != offset) {
-                    if (!addJump(cx, targetOffset, &nextOffset, &forwardJump, stackDepth))
+                    if (!addJump(cx, targetOffset, &nextOffset, &forwardJump, &forwardLoop, stackDepth))
                         return;
                 }
                 getCode(targetOffset).switchTarget = true;
@@ -416,7 +398,7 @@ ScriptAnalysis::analyzeBytecode(JSContext *cx)
             unsigned npairs = GET_UINT16(pc2);
             pc2 += UINT16_LEN;
 
-            if (!addJump(cx, defaultOffset, &nextOffset, &forwardJump, stackDepth))
+            if (!addJump(cx, defaultOffset, &nextOffset, &forwardJump, &forwardLoop, stackDepth))
                 return;
             getCode(defaultOffset).switchTarget = true;
             getCode(defaultOffset).safePoint = true;
@@ -424,7 +406,7 @@ ScriptAnalysis::analyzeBytecode(JSContext *cx)
             while (npairs) {
                 pc2 += UINT32_INDEX_LEN;
                 unsigned targetOffset = offset + GET_JUMP_OFFSET(pc2);
-                if (!addJump(cx, targetOffset, &nextOffset, &forwardJump, stackDepth))
+                if (!addJump(cx, targetOffset, &nextOffset, &forwardJump, &forwardLoop, stackDepth))
                     return;
                 getCode(targetOffset).switchTarget = true;
                 getCode(targetOffset).safePoint = true;
@@ -454,7 +436,7 @@ ScriptAnalysis::analyzeBytecode(JSContext *cx)
                         forwardCatch = catchOffset;
 
                     if (tn->kind != JSTRY_ITER) {
-                        if (!addJump(cx, catchOffset, &nextOffset, &forwardJump, stackDepth))
+                        if (!addJump(cx, catchOffset, &nextOffset, &forwardJump, &forwardLoop, stackDepth))
                             return;
                         getCode(catchOffset).exceptionEntry = true;
                         getCode(catchOffset).safePoint = true;
@@ -486,8 +468,7 @@ ScriptAnalysis::analyzeBytecode(JSContext *cx)
           case JSOP_DECLOCAL:
           case JSOP_LOCALINC:
           case JSOP_LOCALDEC:
-          case JSOP_SETLOCAL:
-          case JSOP_SETLOCALPOP: {
+          case JSOP_SETLOCAL: {
             uint32_t local = GET_SLOTNO(pc);
             if (local >= script->nfixed) {
                 localsAliasStack_ = true;
@@ -509,12 +490,7 @@ ScriptAnalysis::analyzeBytecode(JSContext *cx)
           case JSOP_ARGUMENTS:
           case JSOP_THROW:
           case JSOP_EXCEPTION:
-          case JSOP_DEFLOCALFUN:
-          case JSOP_DEFLOCALFUN_FC:
           case JSOP_LAMBDA:
-          case JSOP_LAMBDA_FC:
-          case JSOP_GETFCSLOT:
-          case JSOP_CALLFCSLOT:
           case JSOP_DEBUGGER:
           case JSOP_FUNCALL:
           case JSOP_FUNAPPLY:
@@ -591,11 +567,9 @@ ScriptAnalysis::analyzeBytecode(JSContext *cx)
           case JSOP_NEWARRAY:
           case JSOP_NEWOBJECT:
           case JSOP_ENDINIT:
-          case JSOP_INITMETHOD:
           case JSOP_INITPROP:
           case JSOP_INITELEM:
           case JSOP_SETPROP:
-          case JSOP_SETMETHOD:
           case JSOP_IN:
           case JSOP_INSTANCEOF:
           case JSOP_LINENO:
@@ -619,7 +593,7 @@ ScriptAnalysis::analyzeBytecode(JSContext *cx)
 
           default:
             if (!(js_CodeSpec[op].format & JOF_DECOMPOSE))
-                isCompileable = isInlineable = false;
+                isJaegerCompileable = isInlineable = false;
             break;
         }
 
@@ -640,7 +614,7 @@ ScriptAnalysis::analyzeBytecode(JSContext *cx)
             }
 
             unsigned targetOffset = offset + GET_JUMP_OFFSET(pc);
-            if (!addJump(cx, targetOffset, &nextOffset, &forwardJump, newStackDepth))
+            if (!addJump(cx, targetOffset, &nextOffset, &forwardJump, &forwardLoop, newStackDepth))
                 return;
         }
 
@@ -672,9 +646,17 @@ ScriptAnalysis::analyzeBytecode(JSContext *cx)
     }
 
     JS_ASSERT(!failed());
-    JS_ASSERT(forwardJump == 0 && forwardCatch == 0);
+    JS_ASSERT(forwardJump == 0 && forwardLoop == 0 && forwardCatch == 0);
 
     ranBytecode_ = true;
+
+    /*
+     * Always ensure that a script's arguments usage has been analyzed before
+     * entering the script. This allows the functionPrologue to ensure that
+     * arguments are always created eagerly which simplifies interp logic.
+     */
+    if (!script->analyzedArgsUsage())
+        analyzeSSA(cx);
 }
 
 /////////////////////////////////////////////////////////////////////
@@ -788,10 +770,7 @@ ScriptAnalysis::analyzeLifetimes(JSContext *cx)
           }
 
           case JSOP_SETARG:
-          case JSOP_SETLOCAL:
-          case JSOP_SETLOCALPOP:
-          case JSOP_DEFLOCALFUN:
-          case JSOP_DEFLOCALFUN_FC: {
+          case JSOP_SETLOCAL: {
             uint32_t slot = GetBytecodeSlot(script, pc);
             if (!slotEscapes(slot))
                 killVariable(cx, lifetimes[slot], offset, saved, savedCount);
@@ -966,7 +945,7 @@ ScriptAnalysis::analyzeLifetimes(JSContext *cx)
     ranLifetimes_ = true;
 }
 
-#ifdef DEBUG
+#ifdef JS_METHODJIT_SPEW
 void
 LifetimeVariable::print() const
 {
@@ -1015,13 +994,14 @@ ScriptAnalysis::killVariable(JSContext *cx, LifetimeVariable &var, unsigned offs
 {
     if (!var.lifetime) {
         /* Make a point lifetime indicating the write. */
-        if (!var.saved)
-            saved[savedCount++] = &var;
-        var.saved = cx->typeLifoAlloc().new_<Lifetime>(offset, var.savedEnd, var.saved);
-        if (!var.saved) {
+        Lifetime *lifetime = cx->typeLifoAlloc().new_<Lifetime>(offset, var.savedEnd, var.saved);
+        if (!lifetime) {
             setOOM(cx);
             return;
         }
+        if (!var.saved)
+            saved[savedCount++] = &var;
+        var.saved = lifetime;
         var.saved->write = true;
         var.savedEnd = 0;
         return;
@@ -1485,7 +1465,6 @@ ScriptAnalysis::analyzeSSA(JSContext *cx)
             break;
 
           case JSOP_INITPROP:
-          case JSOP_INITMETHOD:
             stack[stackDepth - 1].v = code->poppedValues[1];
             break;
 
@@ -1554,7 +1533,7 @@ ScriptAnalysis::analyzeSSA(JSContext *cx)
             break;
           }
 
-          case JSOP_TRY: { 
+          case JSOP_TRY: {
             JSTryNote *tn = script->trynotes()->vector;
             JSTryNote *tnlimit = tn + script->trynotes()->length;
             for (; tn < tnlimit; tn++) {
@@ -1598,6 +1577,13 @@ ScriptAnalysis::analyzeSSA(JSContext *cx)
     }
 
     ranSSA_ = true;
+
+    /*
+     * Now that we have full SSA information for the script, analyze whether
+     * we can avoid creating the arguments object.
+     */
+    if (!script->analyzedArgsUsage())
+        script->setNeedsArgsObj(needsArgsObj(cx));
 }
 
 /* Get a phi node's capacity for a given length. */
@@ -1881,6 +1867,114 @@ ScriptAnalysis::freezeNewValues(JSContext *cx, uint32_t offset)
     cx->delete_(pending);
 }
 
+struct NeedsArgsObjState
+{
+    JSContext *cx;
+    Vector<SSAValue, 16> seen;
+    bool canOptimizeApply;
+    bool haveOptimizedApply;
+    NeedsArgsObjState(JSContext *cx)
+      : cx(cx), seen(cx), canOptimizeApply(true), haveOptimizedApply(false) {}
+};
+
+bool
+ScriptAnalysis::needsArgsObj(NeedsArgsObjState &state, const SSAValue &v)
+{
+    /*
+     * trackUseChain is false for initial values of variables, which
+     * cannot hold the script's arguments object.
+     */
+    if (!trackUseChain(v))
+        return false;
+
+    for (unsigned i = 0; i < state.seen.length(); i++) {
+        if (v == state.seen[i])
+            return false;
+    }
+    if (!state.seen.append(v)) {
+        state.cx->compartment->types.setPendingNukeTypes(state.cx);
+        return true;
+    }
+
+    SSAUseChain *use = useChain(v);
+    while (use) {
+        if (needsArgsObj(state, use))
+            return true;
+        use = use->next;
+    }
+
+    return false;
+}
+
+bool
+ScriptAnalysis::needsArgsObj(NeedsArgsObjState &state, SSAUseChain *use)
+{
+    if (!use->popped)
+        return needsArgsObj(state, SSAValue::PhiValue(use->offset, use->u.phi));
+
+    jsbytecode *pc = script->code + use->offset;
+    JSOp op = JSOp(*pc);
+
+    if (op == JSOP_POP || op == JSOP_POPN)
+        return false;
+
+#ifdef JS_METHODJIT
+    /* SplatApplyArgs can read fp->canonicalActualArg(i) directly. */
+    if (state.canOptimizeApply && op == JSOP_FUNAPPLY && GET_ARGC(pc) == 2 && use->u.which == 0) {
+        JS_ASSERT(mjit::IsLowerableFunCallOrApply(pc));
+        state.haveOptimizedApply = true;
+        state.canOptimizeApply = false;
+        return false;
+    }
+#endif
+
+    /* arguments[i] can read fp->canonicalActualArg(i) directly. */
+    if (!state.haveOptimizedApply && op == JSOP_GETELEM && use->u.which == 1) {
+        state.canOptimizeApply = false;
+        return false;
+    }
+
+    /* arguments.length length can read fp->numActualArgs() directly. */
+    if (!state.haveOptimizedApply && op == JSOP_LENGTH) {
+        state.canOptimizeApply = false;
+        return false;
+    }
+
+    /* Allow assignments to non-closed locals (but not arguments). */
+
+    if (op == JSOP_SETLOCAL) {
+        uint32_t slot = GetBytecodeSlot(script, pc);
+        if (!trackSlot(slot))
+            return true;
+        return needsArgsObj(state, SSAValue::PushedValue(use->offset, 0)) ||
+               needsArgsObj(state, SSAValue::WrittenVar(slot, use->offset));
+    }
+
+    if (op == JSOP_GETLOCAL)
+        return needsArgsObj(state, SSAValue::PushedValue(use->offset, 0));
+
+    return true;
+}
+
+bool
+ScriptAnalysis::needsArgsObj(JSContext *cx)
+{
+    JS_ASSERT(script->argumentsHasLocalBinding());
+
+    /*
+     * Since let variables and dynamic name access are not tracked, we cannot
+     * soundly perform this analysis in their presence. Also, debuggers may
+     * want to see 'arguments', so assume every arguments object escapes.
+     */
+    if (script->bindingsAccessedDynamically || localsAliasStack() || cx->compartment->debugMode())
+        return true;
+
+    unsigned pcOff = script->argumentsBytecode() - script->code;
+
+    NeedsArgsObjState state(cx);
+    return needsArgsObj(state, SSAValue::PushedValue(pcOff, 0));
+}
+
 CrossSSAValue
 CrossScriptSSA::foldValue(const CrossSSAValue &cv)
 {
@@ -2011,7 +2105,7 @@ ScriptAnalysis::printSSA(JSContext *cx)
         }
     }
 
-    printf("\n"); 
+    printf("\n");
 }
 
 void

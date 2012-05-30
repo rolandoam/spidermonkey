@@ -1,41 +1,9 @@
 /* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
  * vim: set ts=4 sw=4 et tw=99 ft=cpp:
  *
- * ***** BEGIN LICENSE BLOCK *****
- * Version: MPL 1.1/GPL 2.0/LGPL 2.1
- *
- * The contents of this file are subject to the Mozilla Public License Version
- * 1.1 (the "License"); you may not use this file except in compliance with
- * the License. You may obtain a copy of the License at
- * http://www.mozilla.org/MPL/
- *
- * Software distributed under the License is distributed on an "AS IS" basis,
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
- * for the specific language governing rights and limitations under the
- * License.
- *
- * The Original Code is mozilla.org code, released
- * June 24, 2010.
- *
- * The Initial Developer of the Original Code is
- *    The Mozilla Foundation
- *
- * Contributor(s):
- *    Andreas Gal <gal@mozilla.com>
- *
- * Alternatively, the contents of this file may be used under the terms of
- * either of the GNU General Public License Version 2 or later (the "GPL"),
- * or the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
- * in which case the provisions of the GPL or the LGPL are applicable instead
- * of those above. If you wish to allow use of your version of this file only
- * under the terms of either the GPL or the LGPL, and not to allow others to
- * use your version of this file under the terms of the MPL, indicate your
- * decision by deleting the provisions above and replace them with the notice
- * and other provisions required by the GPL or the LGPL. If you do not delete
- * the provisions above, a recipient may use your version of this file under
- * the terms of any one of the MPL, the GPL or the LGPL.
- *
- * ***** END LICENSE BLOCK ***** */
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/Util.h"
 
@@ -45,11 +13,11 @@
 #include "nsIDOMWindow.h"
 #include "nsIDOMWindowCollection.h"
 #include "nsContentUtils.h"
+#include "nsJSUtils.h"
 
 #include "XPCWrapper.h"
 #include "XrayWrapper.h"
 #include "FilteringWrapper.h"
-#include "WrapperFactory.h"
 
 #include "jsfriendapi.h"
 
@@ -89,6 +57,9 @@ AccessCheck::isSameOrigin(JSCompartment *a, JSCompartment *b)
 bool
 AccessCheck::isLocationObjectSameOrigin(JSContext *cx, JSObject *wrapper)
 {
+    // The caller must ensure that the given wrapper wraps a Location object.
+    MOZ_ASSERT(WrapperFactory::IsLocationObject(js::UnwrapObject(wrapper)));
+
     // Location objects are parented to the outer window for which they
     // were created. This gives us an easy way to determine whether our
     // object is same origin with the current inner window:
@@ -149,14 +120,6 @@ IsPermitted(const char *name, JSFlatString *prop, bool set)
     if (!propLength)
         return false;
     switch (name[0]) {
-        NAME('D', "DOMException",
-             PROP('c', RW("code"))
-             PROP('m', RW("message"))
-             PROP('n', RW("name"))
-             PROP('r', RW("result"))
-             PROP('t', R("toString")))
-        NAME('E', "Error",
-             PROP('m', R("message")))
         NAME('H', "History",
              PROP('b', R("back"))
              PROP('f', R("forward"))
@@ -231,6 +194,10 @@ static nsIPrincipal *
 GetPrincipal(JSObject *obj)
 {
     NS_ASSERTION(!IS_SLIM_WRAPPER(obj), "global object is a slim wrapper?");
+    NS_ASSERTION(js::GetObjectClass(obj)->flags & JSCLASS_IS_GLOBAL,
+                 "Not a global object?");
+    NS_ASSERTION(!(js::GetObjectClass(obj)->flags & JSCLASS_IS_DOMJSCLASS),
+                 "Not sure what we should do with these yet!");
     if (!IS_WN_WRAPPER(obj)) {
         NS_ASSERTION(!(~js::GetObjectClass(obj)->flags &
                        (JSCLASS_PRIVATE_IS_NSISUPPORTS | JSCLASS_HAS_PRIVATE)),
@@ -248,21 +215,7 @@ GetPrincipal(JSObject *obj)
 bool
 AccessCheck::documentDomainMakesSameOrigin(JSContext *cx, JSObject *obj)
 {
-    JSObject *scope = nsnull;
-    JSStackFrame *fp = nsnull;
-    JS_FrameIterator(cx, &fp);
-    if (fp) {
-        while (!JS_IsScriptFrame(cx, fp)) {
-            if (!JS_FrameIterator(cx, &fp))
-                break;
-        }
-
-        if (fp)
-            scope = JS_GetGlobalForFrame(fp);
-    }
-
-    if (!scope)
-        scope = JS_GetGlobalForScopeChain(cx);
+    JSObject *scope = JS_GetScriptedGlobal(cx);
 
     nsIPrincipal *subject;
     nsIPrincipal *object;
@@ -304,6 +257,15 @@ AccessCheck::isCrossOriginAccessPermitted(JSContext *cx, JSObject *wrapper, jsid
 
     JSObject *obj = Wrapper::wrappedObject(wrapper);
 
+    // LocationPolicy checks PUNCTURE first, so we should never get here for
+    // Location wrappers. For all other wrappers interested in cross-origin
+    // semantics, we want to allow puncturing only for the same-origin
+    // document.domain case.
+    if (act == Wrapper::PUNCTURE) {
+        MOZ_ASSERT(!WrapperFactory::IsLocationObject(obj));
+        return documentDomainMakesSameOrigin(cx, obj);
+    }
+
     const char *name;
     js::Class *clasp = js::GetObjectClass(obj);
     NS_ASSERTION(Jsvalify(clasp) != &XrayUtils::HolderClass, "shouldn't have a holder here");
@@ -320,8 +282,13 @@ AccessCheck::isCrossOriginAccessPermitted(JSContext *cx, JSObject *wrapper, jsid
     if (IsWindow(name) && IsFrameId(cx, obj, id))
         return true;
 
-    // We only reach this point for cross origin location objects (see
-    // SameOriginOrCrossOriginAccessiblePropertiesOnly::check).
+    // Do the dynamic document.domain check.
+    //
+    // Location also needs a dynamic access check, but it's a different one, and
+    // we do it in LocationPolicy::check. Before LocationPolicy::check does that
+    // though, it first calls this function to check whether the property is
+    // accessible to anyone regardless of origin. So make sure not to do the
+    // document.domain check in that case.
     if (!IsLocation(name) && documentDomainMakesSameOrigin(cx, obj))
         return true;
 
@@ -344,18 +311,15 @@ AccessCheck::isSystemOnlyAccessPermitted(JSContext *cx)
         return false;
     }
 
+    JSScript *script = nsnull;
     if (!fp) {
-        if (!JS_FrameIterator(cx, &fp)) {
+        if (!JS_DescribeScriptedCaller(cx, &script, nsnull)) {
             // No code at all is running. So we must be arriving here as the result
             // of C++ code asking us to do something. Allow access.
             return true;
         }
-
-        // Some code is running, we can't make the assumption, as above, but we
-        // can't use a native frame, so clear fp.
-        fp = NULL;
-    } else if (!JS_IsScriptFrame(cx, fp)) {
-        fp = NULL;
+    } else if (JS_IsScriptFrame(cx, fp)) {
+        script = JS_GetFrameScript(cx, fp);
     }
 
     bool privileged;
@@ -368,8 +332,8 @@ AccessCheck::isSystemOnlyAccessPermitted(JSContext *cx)
     // cloned into a less privileged context.
     static const char prefix[] = "chrome://global/";
     const char *filename;
-    if (fp &&
-        (filename = JS_GetScriptFilename(cx, JS_GetFrameScript(cx, fp))) &&
+    if (script &&
+        (filename = JS_GetScriptFilename(cx, script)) &&
         !strncmp(filename, prefix, ArrayLength(prefix) - 1)) {
         return true;
     }
@@ -491,6 +455,10 @@ ExposedPropertiesOnly::check(JSContext *cx, JSObject *wrapper, jsid id, Wrapper:
         perm = PermitObjectAccess;
         return true;
     }
+    if (act == Wrapper::PUNCTURE) {
+        perm = DenyAccess;
+        return false;
+    }
 
     perm = DenyAccess;
 
@@ -514,6 +482,21 @@ ExposedPropertiesOnly::check(JSContext *cx, JSObject *wrapper, jsid id, Wrapper:
     if (!found) {
         // For now, only do this on functions.
         if (!JS_ObjectIsFunction(cx, wrappedObject)) {
+
+            // This little loop hole will go away soon! See bug 553102.
+            JSAutoEnterCompartment innerAc;
+            if (!innerAc.enter(cx, wrapper))
+                return false;
+            nsCOMPtr<nsPIDOMWindow> win =
+                do_QueryInterface(nsJSUtils::GetStaticScriptGlobal(cx, wrapper));
+            if (win) {
+                nsCOMPtr<nsIDocument> doc =
+                    do_QueryInterface(win->GetExtantDocument());
+                if (doc) {
+                    doc->WarnOnceAbout(nsIDocument::eNoExposedProps);
+                }
+            }
+
             perm = PermitPropertyAccess;
             return true;
         }
@@ -526,20 +509,20 @@ ExposedPropertiesOnly::check(JSContext *cx, JSObject *wrapper, jsid id, Wrapper:
         return true;
     }
 
-    jsval exposedProps;
+    JS::Value exposedProps;
     if (!JS_LookupPropertyById(cx, wrappedObject, exposedPropsId, &exposedProps))
         return false;
 
-    if (JSVAL_IS_VOID(exposedProps) || JSVAL_IS_NULL(exposedProps)) {
+    if (exposedProps.isNullOrUndefined()) {
         return PermitIfUniversalXPConnect(cx, id, act, perm); // Deny
     }
 
-    if (!JSVAL_IS_OBJECT(exposedProps)) {
+    if (!exposedProps.isObject()) {
         JS_ReportError(cx, "__exposedProps__ must be undefined, null, or an Object");
         return false;
     }
 
-    JSObject *hallpass = JSVAL_TO_OBJECT(exposedProps);
+    JSObject *hallpass = &exposedProps.toObject();
 
     Access access = NO_ACCESS;
 
@@ -598,6 +581,31 @@ ExposedPropertiesOnly::check(JSContext *cx, JSObject *wrapper, jsid id, Wrapper:
 
     perm = PermitPropertyAccess;
     return true; // Allow
+}
+
+bool
+ComponentsObjectPolicy::check(JSContext *cx, JSObject *wrapper, jsid id, Wrapper::Action act,
+                              Permission &perm) 
+{
+    perm = DenyAccess;
+    JSAutoEnterCompartment ac;
+    if (!ac.enter(cx, wrapper))
+        return false;
+
+    if (JSID_IS_STRING(id) && act == Wrapper::GET) {
+        JSFlatString *flatId = JSID_TO_FLAT_STRING(id);
+        if (JS_FlatStringEqualsAscii(flatId, "isSuccessCode") ||
+            JS_FlatStringEqualsAscii(flatId, "lookupMethod") ||
+            JS_FlatStringEqualsAscii(flatId, "interfaces") ||
+            JS_FlatStringEqualsAscii(flatId, "interfacesByID") ||
+            JS_FlatStringEqualsAscii(flatId, "results"))
+        {
+            perm = PermitPropertyAccess;
+            return true;
+        }
+    }
+
+    return PermitIfUniversalXPConnect(cx, id, act, perm);  // Deny
 }
 
 }

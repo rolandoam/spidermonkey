@@ -1,6 +1,10 @@
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
  * vim: set ts=8 sw=4 et tw=99:
  */
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
 
 #include "tests.h"
 #include "jsfun.h"  // for js::IsInternalFunctionObject
@@ -24,18 +28,17 @@ BEGIN_TEST(testLookup_bug522590)
     // This lookup must not return an internal function object.
     jsvalRoot r(cx);
     CHECK(JS_LookupProperty(cx, xobj, "f", r.addr()));
-    CHECK(JSVAL_IS_OBJECT(r));
-    JSObject *funobj = JSVAL_TO_OBJECT(r);
+    CHECK(r.value().isObject());
+    JSObject *funobj = &r.value().toObject();
     CHECK(funobj->isFunction());
     CHECK(!js::IsInternalFunctionObject(funobj));
-    CHECK(funobj->toFunction()->isClonedMethod());
 
     return true;
 }
 END_TEST(testLookup_bug522590)
 
 JSBool
-document_resolve(JSContext *cx, JSObject *obj, jsid id, unsigned flags, JSObject **objp)
+document_resolve(JSContext *cx, JSHandleObject obj, JSHandleId id, unsigned flags, JSObject **objp)
 {
     // If id is "all", and we're not detecting, resolve document.all=true.
     jsvalRoot v(cx);
@@ -48,7 +51,7 @@ document_resolve(JSContext *cx, JSObject *obj, jsid id, unsigned flags, JSObject
             return false;
         if (JS_FlatStringEqualsAscii(flatStr, "all") && !(flags & JSRESOLVE_DETECTING)) {
             JSBool ok = JS_DefinePropertyById(cx, obj, id, JSVAL_TRUE, NULL, NULL, 0);
-            *objp = ok ? obj : NULL;
+            *objp = ok ? obj.value() : NULL;
             return ok;
         }
     }
@@ -59,8 +62,7 @@ document_resolve(JSContext *cx, JSObject *obj, jsid id, unsigned flags, JSObject
 static JSClass document_class = {
     "document", JSCLASS_NEW_RESOLVE,
     JS_PropertyStub, JS_PropertyStub, JS_PropertyStub, JS_StrictPropertyStub,
-    JS_EnumerateStub, (JSResolveOp) document_resolve, JS_ConvertStub, JS_FinalizeStub,
-    JSCLASS_NO_OPTIONAL_MEMBERS
+    JS_EnumerateStub, (JSResolveOp) document_resolve, JS_ConvertStub
 };
 
 BEGIN_TEST(testLookup_bug570195)

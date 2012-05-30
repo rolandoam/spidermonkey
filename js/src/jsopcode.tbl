@@ -1,42 +1,9 @@
 /* -*- Mode: C; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
  * vim: set ts=8 sw=4 et tw=0 ft=c:
  *
- * ***** BEGIN LICENSE BLOCK *****
- * Version: MPL 1.1/GPL 2.0/LGPL 2.1
- *
- * The contents of this file are subject to the Mozilla Public License Version
- * 1.1 (the "License"); you may not use this file except in compliance with
- * the License. You may obtain a copy of the License at
- * http://www.mozilla.org/MPL/
- *
- * Software distributed under the License is distributed on an "AS IS" basis,
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
- * for the specific language governing rights and limitations under the
- * License.
- *
- * The Original Code is Mozilla Communicator client code, released
- * March 31, 1998.
- *
- * The Initial Developer of the Original Code is
- * Netscape Communications Corporation.
- * Portions created by the Initial Developer are Copyright (C) 1998
- * the Initial Developer. All Rights Reserved.
- *
- * Contributor(s):
- *
- * Alternatively, the contents of this file may be used under the terms of
- * either of the GNU General Public License Version 2 or later (the "GPL"),
- * or the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
- * in which case the provisions of the GPL or the LGPL are applicable instead
- * of those above. If you wish to allow use of your version of this file only
- * under the terms of either the GPL or the LGPL, and not to allow others to
- * use your version of this file under the terms of the MPL, indicate your
- * decision by deleting the provisions above and replace them with the notice
- * and other provisions required by the GPL or the LGPL. If you do not delete
- * the provisions above, a recipient may use your version of this file under
- * the terms of any one of the MPL, the GPL or the LGPL.
- *
- * ***** END LICENSE BLOCK ***** */
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 /*
  * JavaScript operation bytecodes.  If you need to allocate a bytecode, look
@@ -123,7 +90,7 @@ OPDEF(JSOP_IFEQ,      7,  "ifeq",       NULL,         5,  1,  0,  4,  JOF_JUMP|J
 OPDEF(JSOP_IFNE,      8,  "ifne",       NULL,         5,  1,  0,  0,  JOF_JUMP|JOF_PARENHEAD)
 
 /* Get the arguments object for the current, lightweight function activation. */
-OPDEF(JSOP_ARGUMENTS, 9, js_arguments_str, js_arguments_str, 1, 0, 1, 18, JOF_BYTE)
+OPDEF(JSOP_ARGUMENTS, 9,  "arguments",  NULL,         1,  0,  1,  0,  JOF_BYTE)
 
 OPDEF(JSOP_SWAP,      10, "swap",       NULL,         1,  2,  2,  0,  JOF_BYTE)
 OPDEF(JSOP_POPN,      11, "popn",       NULL,         3, -1,  0,  0,  JOF_UINT16)
@@ -172,7 +139,7 @@ OPDEF(JSOP_NAMEDEC,   50, "namedec",    NULL,         6,  0,  1, 15,  JOF_ATOM|J
 OPDEF(JSOP_PROPDEC,   51, "propdec",    NULL,         6,  1,  1, 15,  JOF_ATOM|JOF_PROP|JOF_DEC|JOF_POST|JOF_TMPSLOT3|JOF_DECOMPOSE)
 OPDEF(JSOP_ELEMDEC,   52, "elemdec",    NULL,         2,  2,  1, 15,  JOF_BYTE |JOF_ELEM|JOF_DEC|JOF_POST|JOF_TMPSLOT2|JOF_DECOMPOSE)
 
-OPDEF(JSOP_GETPROP,   53, "getprop",    NULL,         5,  1,  1, 18,  JOF_ATOM|JOF_PROP|JOF_TYPESET)
+OPDEF(JSOP_GETPROP,   53, "getprop",    NULL,         5,  1,  1, 18,  JOF_ATOM|JOF_PROP|JOF_TYPESET|JOF_TMPSLOT3)
 OPDEF(JSOP_SETPROP,   54, "setprop",    NULL,         5,  2,  1,  3,  JOF_ATOM|JOF_PROP|JOF_SET|JOF_DETECTING)
 OPDEF(JSOP_GETELEM,   55, "getelem",    NULL,         1,  2,  1, 18,  JOF_BYTE |JOF_ELEM|JOF_TYPESET|JOF_LEFTASSOC)
 OPDEF(JSOP_SETELEM,   56, "setelem",    NULL,         1,  3,  1,  3,  JOF_BYTE |JOF_ELEM|JOF_SET|JOF_DETECTING)
@@ -348,11 +315,7 @@ OPDEF(JSOP_LAMBDA,    130, "lambda",    NULL,         5,  0,  1, 19,  JOF_OBJECT
 /* Used for named function expression self-naming, if lightweight. */
 OPDEF(JSOP_CALLEE,    131, "callee",    NULL,         1,  0,  1, 19,  JOF_BYTE)
 
-/*
- * Like JSOP_SETLOCAL, but specialized to avoid requiring JSOP_POP immediately
- * after to throw away the exception value.
- */
-OPDEF(JSOP_SETLOCALPOP, 132, "setlocalpop", NULL,     3,  1,  0,  3,  JOF_LOCAL|JOF_NAME|JOF_SET)
+OPDEF(JSOP_UNUSED31,  132, "unused31",  NULL,         1,  0,  0,  0,  JOF_BYTE)
 
 /* Pick an element from the stack. */
 OPDEF(JSOP_PICK,        133, "pick",      NULL,       2,  0,  0,  0,  JOF_UINT8|JOF_TMPSLOT2)
@@ -365,25 +328,21 @@ OPDEF(JSOP_TRY,         134,"try",        NULL,       1,  0,  0,  0,  JOF_BYTE)
 OPDEF(JSOP_FINALLY,     135,"finally",    NULL,       1,  0,  2,  0,  JOF_BYTE)
 
 /*
- * Get a slot from a flat closure function object that contains a snapshot of
- * the closure-invariant upvar values. The immediate operand indexes the upvar
- * in the function's u.i.script->upvars() array.
+ * An "aliased variable" is a var, let, or formal arg that is aliased. Sources
+ * of aliasing include: nested functions accessing the vars of an enclosing
+ * function, function statements that are conditionally executed, 'eval',
+ * 'with', 'arguments' and E4X filters. All of these cases require creating a
+ * CallObject to own the aliased variable.
  */
-OPDEF(JSOP_GETFCSLOT,   136,"getfcslot",  NULL,       3,  0,  1, 19,  JOF_UINT16|JOF_NAME|JOF_TYPESET)
-OPDEF(JSOP_CALLFCSLOT,  137,"callfcslot", NULL,       3,  0,  1, 19,  JOF_UINT16|JOF_NAME|JOF_TYPESET)
+OPDEF(JSOP_GETALIASEDVAR, 136,"getaliasedvar",NULL,   9,  0,  1, 19,  JOF_SCOPECOORD|JOF_NAME)
+OPDEF(JSOP_CALLALIASEDVAR,137,"callaliasedvar",NULL,  9,  0,  1, 19,  JOF_SCOPECOORD|JOF_NAME)
+OPDEF(JSOP_SETALIASEDVAR, 138,"setaliasedvar",NULL,   9,  1,  1,  3,  JOF_SCOPECOORD|JOF_NAME|JOF_SET|JOF_DETECTING)
+OPDEF(JSOP_INCALIASEDVAR, 139,"incaliasedvar",NULL,   10, 0,  1, 15,  JOF_SCOPECOORD|JOF_NAME|JOF_INC|JOF_TMPSLOT3|JOF_DECOMPOSE)
+OPDEF(JSOP_DECALIASEDVAR, 140,"decaliasedvar",NULL,   10, 0,  1, 15,  JOF_SCOPECOORD|JOF_NAME|JOF_DEC|JOF_TMPSLOT3|JOF_DECOMPOSE)
+OPDEF(JSOP_ALIASEDVARINC, 141,"aliasedvarinc",NULL,   10, 0,  1, 15,  JOF_SCOPECOORD|JOF_NAME|JOF_INC|JOF_POST|JOF_TMPSLOT3|JOF_DECOMPOSE)
+OPDEF(JSOP_ALIASEDVARDEC, 142,"aliasedvardec",NULL,   10, 0,  1, 15,  JOF_SCOPECOORD|JOF_NAME|JOF_DEC|JOF_POST|JOF_TMPSLOT3|JOF_DECOMPOSE)
 
-/*
- * Define a local function object as a local variable.
- * The local variable's slot number is the first immediate two-byte operand.
- * The function object's atom index is the second immediate operand.
- */
-OPDEF(JSOP_DEFLOCALFUN, 138,"deflocalfun",NULL,       7,  0,  0,  0,  JOF_SLOTOBJECT|JOF_DECLARING|JOF_TMPSLOT)
-
-/* Extended jumps. */
-OPDEF(JSOP_UNUSED4,       139,"unused4",  NULL,       1,  0,  0,  0,  JOF_BYTE)
-OPDEF(JSOP_UNUSED5,       140,"unused5",  NULL,       1,  0,  0,  0,  JOF_BYTE)
-OPDEF(JSOP_UNUSED6,       141,"unused6",  NULL,       1,  0,  0,  0,  JOF_BYTE)
-OPDEF(JSOP_UNUSED7,       142,"unused7",  NULL,       1,  0,  0,  0,  JOF_BYTE)
+/* Unused. */
 OPDEF(JSOP_UNUSED8,       143,"unused8",  NULL,       1,  0,  0,  0,  JOF_BYTE)
 OPDEF(JSOP_UNUSED9,       144,"unused9",  NULL,       1,  0,  0,  0,  JOF_BYTE)
 OPDEF(JSOP_UNUSED10,      145,"unused10", NULL,       1,  0,  0,  0,  JOF_BYTE)
@@ -543,20 +502,12 @@ OPDEF(JSOP_LENGTH,        217, "length",       NULL,  5,  1,  1, 18,  JOF_ATOM|J
 OPDEF(JSOP_HOLE,          218, "hole",         NULL,  1,  0,  1,  0,  JOF_BYTE)
 
 OPDEF(JSOP_UNUSED17,      219,"unused17",      NULL,  1,  0,  0,  0,  JOF_BYTE)
+OPDEF(JSOP_UNUSED24,      220,"unused24",      NULL,  1,  0,  0,  0,  JOF_BYTE)
+OPDEF(JSOP_UNUSED25,      221,"unused25",      NULL,  1,  0,  0,  0,  JOF_BYTE)
+OPDEF(JSOP_UNUSED29,      222,"unused29",      NULL,  1,  0,  0,  0,  JOF_BYTE)
+OPDEF(JSOP_UNUSED30,      223,"unused30",      NULL,  1,  0,  0,  0,  JOF_BYTE)
 
-/*
- * Variants of JSOP_{DEFLOCALFUN,LAMBDA} optimized for the flat closure case.
- */
-OPDEF(JSOP_DEFLOCALFUN_FC,220,"deflocalfun_fc",NULL,  7,  0,  0,  0,  JOF_SLOTOBJECT|JOF_DECLARING|JOF_TMPSLOT)
-OPDEF(JSOP_LAMBDA_FC,     221,"lambda_fc",     NULL,  5,  0,  1, 19,  JOF_OBJECT)
-
-/*
- * Joined function object as method optimization support.
- */
-OPDEF(JSOP_SETMETHOD,     222,"setmethod",     NULL,  5,  2,  1,  3,  JOF_ATOM|JOF_PROP|JOF_SET|JOF_DETECTING)
-OPDEF(JSOP_INITMETHOD,    223,"initmethod",    NULL,  5,  2,  1,  3,  JOF_ATOM|JOF_PROP|JOF_SET|JOF_DETECTING)
-
-OPDEF(JSOP_UNUSED16,      224,"unused16",      NULL,  1,  0,  0,  0,  JOF_BYTE)
+OPDEF(JSOP_REST,          224, "rest",         NULL,  1,  0,  1,  0,  JOF_BYTE|JOF_TYPESET)
 
 /* Pop the stack, convert to a jsid (int or string), and push back. */
 OPDEF(JSOP_TOID,          225, "toid",         NULL,  1,  1,  1,  0,  JOF_BYTE)
@@ -566,3 +517,5 @@ OPDEF(JSOP_IMPLICITTHIS,  226, "implicitthis", "",    5,  0,  1,  0,  JOF_ATOM)
 
 /* This opcode is the target of the entry jump for some loop. */
 OPDEF(JSOP_LOOPENTRY,     227, "loopentry",    NULL,  1,  0,  0,  0,  JOF_BYTE)
+
+OPDEF(JSOP_ACTUALSFILLED, 228, "actualsfilled", NULL,  3,  0,  1,  0,  JOF_UINT16)

@@ -1,41 +1,8 @@
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
  *
- * ***** BEGIN LICENSE BLOCK *****
- * Version: MPL 1.1/GPL 2.0/LGPL 2.1
- *
- * The contents of this file are subject to the Mozilla Public License Version
- * 1.1 (the "License"); you may not use this file except in compliance with
- * the License. You may obtain a copy of the License at
- * http://www.mozilla.org/MPL/
- *
- * Software distributed under the License is distributed on an "AS IS" basis,
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
- * for the specific language governing rights and limitations under the
- * License.
- *
- * The Original Code is Mozilla Communicator client code, released
- * March 31, 1998.
- *
- * The Initial Developer of the Original Code is
- * Netscape Communications Corporation.
- * Portions created by the Initial Developer are Copyright (C) 1998
- * the Initial Developer. All Rights Reserved.
- *
- * Contributor(s):
- *
- * Alternatively, the contents of this file may be used under the terms of
- * either of the GNU General Public License Version 2 or later (the "GPL"),
- * or the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
- * in which case the provisions of the GPL or the LGPL are applicable instead
- * of those above. If you wish to allow use of your version of this file only
- * under the terms of either the GPL or the LGPL, and not to allow others to
- * use your version of this file under the terms of the MPL, indicate your
- * decision by deleting the provisions above and replace them with the notice
- * and other provisions required by the GPL or the LGPL. If you do not delete
- * the provisions above, a recipient may use your version of this file under
- * the terms of any one of the MPL, the GPL or the LGPL.
- *
- * ***** END LICENSE BLOCK ***** */
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #ifndef jsprvtd_h___
 #define jsprvtd_h___
@@ -95,7 +62,10 @@ typedef struct JSPrinter            JSPrinter;
 typedef struct JSStackHeader        JSStackHeader;
 typedef struct JSSubString          JSSubString;
 typedef struct JSSpecializedNative  JSSpecializedNative;
+
+#if JS_HAS_XML_SUPPORT
 typedef struct JSXML                JSXML;
+#endif
 
 /*
  * Template declarations.
@@ -129,6 +99,7 @@ class RegExpObjectBuilder;
 class RegExpShared;
 class RegExpStatics;
 class MatchPairs;
+class PropertyName;
 
 namespace detail { class RegExpCode; }
 
@@ -159,7 +130,7 @@ class StackFrame;
 class StackSegment;
 class StackSpace;
 class ContextStack;
-class FrameRegsIter;
+class ScriptFrameIter;
 class CallReceiver;
 class CallArgs;
 
@@ -169,6 +140,7 @@ struct FunctionBox;
 struct ObjectBox;
 struct ParseNode;
 struct Parser;
+struct SharedContext;
 class TokenStream;
 struct Token;
 struct TokenPos;
@@ -177,7 +149,7 @@ struct TreeContext;
 class UpvarCookie;
 
 class Proxy;
-class ProxyHandler;
+class BaseProxyHandler;
 class Wrapper;
 class CrossCompartmentWrapper;
 
@@ -249,72 +221,27 @@ struct TypeCompartment;
 
 } /* namespace types */
 
-enum ThingRootKind
-{
-    THING_ROOT_OBJECT,
-    THING_ROOT_SHAPE,
-    THING_ROOT_BASE_SHAPE,
-    THING_ROOT_TYPE_OBJECT,
-    THING_ROOT_STRING,
-    THING_ROOT_SCRIPT,
-    THING_ROOT_ID,
-    THING_ROOT_VALUE,
-    THING_ROOT_LIMIT
+typedef JS::Handle<Shape*>             HandleShape;
+typedef JS::Handle<BaseShape*>         HandleBaseShape;
+typedef JS::Handle<types::TypeObject*> HandleTypeObject;
+typedef JS::Handle<JSAtom*>            HandleAtom;
+typedef JS::Handle<PropertyName*>      HandlePropertyName;
+
+typedef JS::Rooted<Shape*>             RootedShape;
+typedef JS::Rooted<BaseShape*>         RootedBaseShape;
+typedef JS::Rooted<types::TypeObject*> RootedTypeObject;
+typedef JS::Rooted<JSAtom*>            RootedAtom;
+typedef JS::Rooted<PropertyName*>      RootedPropertyName;
+
+enum XDRMode {
+    XDR_ENCODE,
+    XDR_DECODE
 };
 
-template <typename T> class Root;
-template <typename T> class RootedVar;
+template <XDRMode mode>
+class XDRState;
 
-template <typename T>
-struct RootMethods { };
-
-/*
- * Reference to a stack location rooted for GC. See "Moving GC Stack Rooting"
- * comment in jscntxt.h.
- */
-template <typename T>
-class Handle
-{
-  public:
-    /* Copy handles of different types, with implicit coercion. */
-    template <typename S> Handle(Handle<S> handle) {
-        testAssign<S>();
-        ptr = reinterpret_cast<const T *>(handle.address());
-    }
-
-    /* Get a handle from a rooted stack location, with implicit coercion. */
-    template <typename S> inline Handle(const Root<S> &root);
-    template <typename S> inline Handle(const RootedVar<S> &root);
-
-    const T *address() { return ptr; }
-
-    operator T () { return value(); }
-    T operator ->() { return value(); }
-
-  private:
-    const T *ptr;
-    T value() { return *ptr; }
-
-    template <typename S>
-    void testAssign() {
-#ifdef DEBUG
-        T a = RootMethods<T>::initial();
-        S b = RootMethods<S>::initial();
-        a = b;
-        (void)a;
-#endif
-    }
-};
-
-typedef Handle<JSObject*>          HandleObject;
-typedef Handle<JSFunction*>        HandleFunction;
-typedef Handle<Shape*>             HandleShape;
-typedef Handle<BaseShape*>         HandleBaseShape;
-typedef Handle<types::TypeObject*> HandleTypeObject;
-typedef Handle<JSString*>          HandleString;
-typedef Handle<JSAtom*>            HandleAtom;
-typedef Handle<jsid>               HandleId;
-typedef Handle<Value>              HandleValue;
+class FreeOp;
 
 } /* namespace js */
 
@@ -378,7 +305,7 @@ typedef void
 
 /* called just before script destruction */
 typedef void
-(* JSDestroyScriptHook)(JSContext *cx,
+(* JSDestroyScriptHook)(JSFreeOp *fop,
                         JSScript  *script,
                         void      *callerdata);
 
@@ -443,40 +370,22 @@ typedef struct JSDebugHooks {
 /* js::ObjectOps function pointer typedefs. */
 
 /*
- * Look for id in obj and its prototype chain, returning false on error or
- * exception, true on success.  On success, return null in *propp if id was
- * not found.  If id was found, return the first object searching from obj
- * along its prototype chain in which id names a direct property in *objp, and
- * return a non-null, opaque property pointer in *propp.
- *
- * If JSLookupPropOp succeeds and returns with *propp non-null, that pointer
- * may be passed as the prop parameter to a JSAttributesOp, as a short-cut
- * that bypasses id re-lookup.
- */
-typedef JSBool
-(* JSLookupPropOp)(JSContext *cx, JSObject *obj, jsid id, JSObject **objp,
-                   JSProperty **propp);
-
-/*
- * Get or set attributes of the property obj[id]. Return false on error or
- * exception, true with current attributes in *attrsp.
- */
-typedef JSBool
-(* JSAttributesOp)(JSContext *cx, JSObject *obj, jsid id, unsigned *attrsp);
-
-/*
  * A generic type for functions mapping an object to another object, or null
  * if an error or exception was thrown on cx.
  */
 typedef JSObject *
-(* JSObjectOp)(JSContext *cx, JSObject *obj);
+(* JSObjectOp)(JSContext *cx, JSHandleObject obj);
+
+/* Signature for class initialization ops. */
+typedef JSObject *
+(* JSClassInitializerOp)(JSContext *cx, JSObject *obj);
 
 /*
  * Hook that creates an iterator object for a given object. Returns the
  * iterator object or null if an error or exception was thrown on cx.
  */
 typedef JSObject *
-(* JSIteratorOp)(JSContext *cx, JSObject *obj, JSBool keysonly);
+(* JSIteratorOp)(JSContext *cx, JSHandleObject obj, JSBool keysonly);
 
 /*
  * The following determines whether JS_EncodeCharacters and JS_DecodeBytes

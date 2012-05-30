@@ -1,41 +1,8 @@
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
  *
- * ***** BEGIN LICENSE BLOCK *****
- * Version: MPL 1.1/GPL 2.0/LGPL 2.1
- *
- * The contents of this file are subject to the Mozilla Public License Version
- * 1.1 (the "License"); you may not use this file except in compliance with
- * the License. You may obtain a copy of the License at
- * http://www.mozilla.org/MPL/
- *
- * Software distributed under the License is distributed on an "AS IS" basis,
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
- * for the specific language governing rights and limitations under the
- * License.
- *
- * The Original Code is Mozilla Communicator client code, released
- * March 31, 1998.
- *
- * The Initial Developer of the Original Code is
- * Netscape Communications Corporation.
- * Portions created by the Initial Developer are Copyright (C) 1998
- * the Initial Developer. All Rights Reserved.
- *
- * Contributor(s):
- *
- * Alternatively, the contents of this file may be used under the terms of
- * either of the GNU General Public License Version 2 or later (the "GPL"),
- * or the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
- * in which case the provisions of the GPL or the LGPL are applicable instead
- * of those above. If you wish to allow use of your version of this file only
- * under the terms of either the GPL or the LGPL, and not to allow others to
- * use your version of this file under the terms of the MPL, indicate your
- * decision by deleting the provisions above and replace them with the notice
- * and other provisions required by the GPL or the LGPL. If you do not delete
- * the provisions above, a recipient may use your version of this file under
- * the terms of any one of the MPL, the GPL or the LGPL.
- *
- * ***** END LICENSE BLOCK ***** */
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #ifndef jsfun_h___
 #define jsfun_h___
@@ -57,26 +24,8 @@
  * any) it might be.
  *
  *   00   not interpreted
- *   01   interpreted, neither flat nor null closure
- *   10   interpreted, flat closure
+ *   01   interpreted, not null closure
  *   11   interpreted, null closure
- *
- * isFlatClosure() implies isInterpreted() and u.i.script->upvarsOffset != 0.
- * isNullClosure() implies isInterpreted() and u.i.script->upvarsOffset == 0.
- *
- * isInterpreted() but not isFlatClosure() and u.i.script->upvarsOffset != 0
- * is an Algol-like function expression or nested function, i.e., a function
- * that never escapes upward or downward (heapward), and is only ever called.
- *
- * Finally, isInterpreted() and u.i.script->upvarsOffset == 0 could be either
- * a non-closure (a global function definition, or any function that uses no
- * outer names), or a closure of an escaping function that uses outer names
- * whose values can't be snapshot (because the outer names could be reassigned
- * after the closure is formed, or because assignments could not be analyzed
- * due to with or eval).
- *
- * Such a hard-case function must use JSOP_NAME, etc., and reify outer function
- * activations' call objects, etc. if it's not a global function.
  *
  * NB: JSFUN_EXPR_CLOSURE reuses JSFUN_STUB_GSOPS, which is an API request flag
  * bit only, never stored in fun->flags.
@@ -85,18 +34,13 @@
  * move to u.i.script->flags. For now we use function flag bits to minimize
  * pointer-chasing.
  */
-#define JSFUN_JOINABLE      0x0001  /* function is null closure that does not
-                                       appear to call itself via its own name
-                                       or arguments.callee */
-
 #define JSFUN_PROTOTYPE     0x0800  /* function is Function.prototype for some
                                        global object */
 
 #define JSFUN_EXPR_CLOSURE  0x1000  /* expression closure: function(x) x*x */
 #define JSFUN_EXTENDED      0x2000  /* structure is FunctionExtended */
-#define JSFUN_INTERPRETED   0x4000  /* use u.i if kind >= this value else u.n */
-#define JSFUN_FLAT_CLOSURE  0x8000  /* flat (aka "display") closure */
-#define JSFUN_NULL_CLOSURE  0xc000  /* null closure entrains no scope chain */
+#define JSFUN_INTERPRETED   0x4000  /* use u.i if kind >= this value else u.native */
+#define JSFUN_NULL_CLOSURE  0x8000  /* null closure entrains no scope chain */
 #define JSFUN_KINDMASK      0xc000  /* encode interp vs. native and closure
                                        optimization level -- see above */
 
@@ -108,11 +52,7 @@ struct JSFunction : public JSObject
                                      reflected as f.length/f.arity */
     uint16_t        flags;        /* flags, see JSFUN_* below and in jsapi.h */
     union U {
-        struct Native {
-            js::Native  native;   /* native method pointer or null */
-            js::Class   *clasp;   /* class of objects constructed
-                                     by this function */
-        } n;
+        js::Native  native;       /* native method pointer or null */
         struct Scripted {
             JSScript    *script_; /* interpreted bytecode descriptor or null;
                                      use the accessor! */
@@ -121,15 +61,15 @@ struct JSFunction : public JSObject
         } i;
         void            *nativeOrScript;
     } u;
-    JSAtom          *atom;        /* name for diagnostics and decompiling */
+    js::HeapPtrAtom  atom;        /* name for diagnostics and decompiling */
 
-    bool optimizedClosure()  const { return kind() > JSFUN_INTERPRETED; }
+    bool hasDefaults()       const { return flags & JSFUN_HAS_DEFAULTS; }
+    bool hasRest()           const { return flags & JSFUN_HAS_REST; }
     bool isInterpreted()     const { return kind() >= JSFUN_INTERPRETED; }
     bool isNative()          const { return !isInterpreted(); }
     bool isNativeConstructor() const { return flags & JSFUN_CONSTRUCTOR; }
     bool isHeavyweight()     const { return JSFUN_HEAVYWEIGHT_TEST(flags); }
     bool isNullClosure()     const { return kind() == JSFUN_NULL_CLOSURE; }
-    bool isFlatClosure()     const { return kind() == JSFUN_FLAT_CLOSURE; }
     bool isFunctionPrototype() const { return flags & JSFUN_PROTOTYPE; }
     bool isInterpretedConstructor() const { return isInterpreted() && !isFunctionPrototype(); }
 
@@ -147,19 +87,18 @@ struct JSFunction : public JSObject
         this->nargs = nargs;
     }
 
+    void setHasRest() {
+        JS_ASSERT(!hasRest());
+        this->flags |= JSFUN_HAS_REST;
+    }
+
+    void setHasDefaults() {
+        JS_ASSERT(!hasDefaults());
+        this->flags |= JSFUN_HAS_DEFAULTS;
+    }
+
     /* uint16_t representation bounds number of call object dynamic slots. */
     enum { MAX_ARGS_AND_VARS = 2 * ((1U << 16) - 1) };
-
-#define JS_LOCAL_NAME_TO_ATOM(nameWord)  ((JSAtom *) ((nameWord) & ~uintptr_t(1)))
-#define JS_LOCAL_NAME_IS_CONST(nameWord) ((((nameWord) & uintptr_t(1))) != 0)
-
-    bool mightEscape() const {
-        return isInterpreted() && (isFlatClosure() || !script()->bindings.hasUpvars());
-    }
-
-    bool joinable() const {
-        return flags & JSFUN_JOINABLE;
-    }
 
     /*
      * For an interpreted function, accessors for the initial scope object of
@@ -171,9 +110,12 @@ struct JSFunction : public JSObject
 
     static inline size_t offsetOfEnvironment() { return offsetof(JSFunction, u.i.env_); }
 
-    inline void setJoinable();
+    JSScript *script() const {
+        JS_ASSERT(isInterpreted());
+        return *(js::HeapPtrScript *)&u.i.script_;
+    }
 
-    js::HeapPtrScript &script() const {
+    js::HeapPtrScript &mutableScript() {
         JS_ASSERT(isInterpreted());
         return *(js::HeapPtrScript *)&u.i.script_;
     }
@@ -182,12 +124,12 @@ struct JSFunction : public JSObject
     inline void initScript(JSScript *script_);
 
     JSScript *maybeScript() const {
-        return isInterpreted() ? script().get() : NULL;
+        return isInterpreted() ? script() : NULL;
     }
 
     JSNative native() const {
         JS_ASSERT(isNative());
-        return u.n.native;
+        return u.native;
     }
 
     JSNative maybeNative() const {
@@ -195,34 +137,34 @@ struct JSFunction : public JSObject
     }
 
     static unsigned offsetOfNativeOrScript() {
-        JS_STATIC_ASSERT(offsetof(U, n.native) == offsetof(U, i.script_));
-        JS_STATIC_ASSERT(offsetof(U, n.native) == offsetof(U, nativeOrScript));
+        JS_STATIC_ASSERT(offsetof(U, native) == offsetof(U, i.script_));
+        JS_STATIC_ASSERT(offsetof(U, native) == offsetof(U, nativeOrScript));
         return offsetof(JSFunction, u.nativeOrScript);
     }
 
-    js::Class *getConstructorClass() const {
-        JS_ASSERT(isNative());
-        return u.n.clasp;
-    }
-
-    void setConstructorClass(js::Class *clasp) {
-        JS_ASSERT(isNative());
-        u.n.clasp = clasp;
-    }
-
 #if JS_BITS_PER_WORD == 32
+# ifdef JS_THREADSAFE
+    static const js::gc::AllocKind FinalizeKind = js::gc::FINALIZE_OBJECT2_BACKGROUND;
+    static const js::gc::AllocKind ExtendedFinalizeKind = js::gc::FINALIZE_OBJECT4_BACKGROUND;
+# else
     static const js::gc::AllocKind FinalizeKind = js::gc::FINALIZE_OBJECT2;
     static const js::gc::AllocKind ExtendedFinalizeKind = js::gc::FINALIZE_OBJECT4;
+# endif
 #else
+# ifdef JS_THREADSAFE
+    static const js::gc::AllocKind FinalizeKind = js::gc::FINALIZE_OBJECT4_BACKGROUND;
+    static const js::gc::AllocKind ExtendedFinalizeKind = js::gc::FINALIZE_OBJECT8_BACKGROUND;
+# else
     static const js::gc::AllocKind FinalizeKind = js::gc::FINALIZE_OBJECT4;
     static const js::gc::AllocKind ExtendedFinalizeKind = js::gc::FINALIZE_OBJECT8;
+# endif
 #endif
 
     inline void trace(JSTracer *trc);
 
     /* Bound function accessors. */
 
-    inline bool initBoundFunction(JSContext *cx, const js::Value &thisArg,
+    inline bool initBoundFunction(JSContext *cx, js::HandleValue thisArg,
                                   const js::Value *args, unsigned argslen);
 
     inline JSObject *getBoundFunctionTarget() const;
@@ -242,62 +184,12 @@ struct JSFunction : public JSObject
 
   public:
     /* Accessors for data stored in extended functions. */
-
     inline void initializeExtended();
-
     inline void setExtendedSlot(size_t which, const js::Value &val);
     inline const js::Value &getExtendedSlot(size_t which) const;
 
-    /*
-     * Flat closures with one or more upvars snapshot the upvars' values
-     * into a vector of js::Values referenced from here. This is a private
-     * pointer but is set only at creation and does not need to be barriered.
-     */
-    static const uint32_t FLAT_CLOSURE_UPVARS_SLOT = 0;
-
-    static inline size_t getFlatClosureUpvarsOffset();
-
-    inline js::Value getFlatClosureUpvar(uint32_t i) const;
-    inline void setFlatClosureUpvar(uint32_t i, const js::Value &v);
-    inline void initFlatClosureUpvar(uint32_t i, const js::Value &v);
-
   private:
-    inline bool hasFlatClosureUpvars() const;
-    inline js::HeapValue *getFlatClosureUpvars() const;
-  public:
-
-    /* See comments in fun_finalize. */
-    inline void finalizeUpvars();
-
-    /* Slot holding associated method property, needed for foo.caller handling. */
-    static const uint32_t METHOD_PROPERTY_SLOT = 0;
-
-    /* For cloned methods, slot holding the object this was cloned as a property from. */
-    static const uint32_t METHOD_OBJECT_SLOT = 1;
-
-    /* Whether this is a function cloned from a method. */
-    inline bool isClonedMethod() const;
-
-    /* For a cloned method, pointer to the object the method was cloned for. */
-    inline JSObject *methodObj() const;
-    inline void setMethodObj(JSObject& obj);
-
     /*
-     * Method name imputed from property uniquely assigned to or initialized,
-     * where the function does not need to be cloned to carry a scope chain or
-     * flattened upvars. This is set on both the original and cloned function.
-     */
-    inline JSAtom *methodAtom() const;
-    inline void setMethodAtom(JSAtom *atom);
-
-    /*
-     * Measures things hanging off this JSFunction that are counted by the
-     * |miscSize| argument in JSObject::sizeOfExcludingThis().
-     */
-    size_t sizeOfMisc(JSMallocSizeOfFun mallocSizeOf) const;
-
-  private:
-    /* 
      * These member functions are inherited from JSObject, but should never be applied to
      * a value statically known to be a JSFunction.
      */
@@ -328,17 +220,12 @@ js_NewFunction(JSContext *cx, JSObject *funobj, JSNative native, unsigned nargs,
                js::gc::AllocKind kind = JSFunction::FinalizeKind);
 
 extern JSFunction * JS_FASTCALL
-js_CloneFunctionObject(JSContext *cx, JSFunction *fun, JSObject *parent, JSObject *proto,
+js_CloneFunctionObject(JSContext *cx, js::HandleFunction fun,
+                       js::HandleObject parent, js::HandleObject proto,
                        js::gc::AllocKind kind = JSFunction::FinalizeKind);
 
-extern JSFunction * JS_FASTCALL
-js_AllocFlatClosure(JSContext *cx, JSFunction *fun, JSObject *scopeChain);
-
 extern JSFunction *
-js_NewFlatClosure(JSContext *cx, JSFunction *fun);
-
-extern JSFunction *
-js_DefineFunction(JSContext *cx, js::HandleObject obj, jsid id, JSNative native,
+js_DefineFunction(JSContext *cx, js::HandleObject obj, js::HandleId id, JSNative native,
                   unsigned nargs, unsigned flags,
                   js::gc::AllocKind kind = JSFunction::FinalizeKind);
 
@@ -358,7 +245,7 @@ extern void
 js_ReportIsNotFunction(JSContext *cx, const js::Value *vp, unsigned flags);
 
 extern void
-js_PutCallObject(js::StackFrame *fp);
+js_PutCallObject(js::StackFrame *fp, js::CallObject &callobj);
 
 namespace js {
 
@@ -391,19 +278,6 @@ JSFunction::toExtended() const
     return static_cast<const js::FunctionExtended *>(this);
 }
 
-/*
- * Get the arguments object for the given frame.  If the frame is strict mode
- * code, its current arguments will be copied into the arguments object.
- *
- * NB: Callers *must* get the arguments object before any parameters are
- *     mutated when the frame is strict mode code!  The emitter ensures this
- *     occurs for strict mode functions containing syntax which might mutate a
- *     named parameter by synthesizing an arguments access at the start of the
- *     function.
- */
-extern js::ArgumentsObject *
-js_GetArgsObject(JSContext *cx, js::StackFrame *fp);
-
 extern void
 js_PutArgsObject(js::StackFrame *fp);
 
@@ -412,8 +286,12 @@ js_IsNamedLambda(JSFunction *fun) { return (fun->flags & JSFUN_LAMBDA) && fun->a
 
 namespace js {
 
-extern JSBool
-XDRFunctionObject(JSXDRState *xdr, JSObject **objp);
+template<XDRMode mode>
+bool
+XDRInterpretedFunction(XDRState<mode> *xdr, JSObject **objp, JSScript *parentScript);
+
+extern JSObject *
+CloneInterpretedFunction(JSContext *cx, JSFunction *fun);
 
 } /* namespace js */
 
@@ -422,5 +300,9 @@ js_fun_apply(JSContext *cx, unsigned argc, js::Value *vp);
 
 extern JSBool
 js_fun_call(JSContext *cx, unsigned argc, js::Value *vp);
+
+extern JSObject*
+js_fun_bind(JSContext *cx, js::HandleObject target, js::HandleValue thisArg,
+            js::Value *boundArgs, unsigned argslen);
 
 #endif /* jsfun_h___ */

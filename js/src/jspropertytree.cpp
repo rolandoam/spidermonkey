@@ -1,41 +1,8 @@
 /* -*- Mode: c++; c-basic-offset: 4; tab-width: 40; indent-tabs-mode: nil -*- */
 /* vim: set ts=40 sw=4 et tw=99: */
-/* ***** BEGIN LICENSE BLOCK *****
- * Version: MPL 1.1/GPL 2.0/LGPL 2.1
- *
- * The contents of this file are subject to the Mozilla Public License Version
- * 1.1 (the "License"); you may not use this file except in compliance with
- * the License. You may obtain a copy of the License at
- * http://www.mozilla.org/MPL/
- *
- * Software distributed under the License is distributed on an "AS IS" basis,
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
- * for the specific language governing rights and limitations under the
- * License.
- *
- * The Original Code is the Mozilla SpiderMonkey property tree implementation
- *
- * The Initial Developer of the Original Code is
- *   Mozilla Foundation
- * Portions created by the Initial Developer are Copyright (C) 2002-2010
- * the Initial Developer. All Rights Reserved.
- *
- * Contributor(s):
- *   Brendan Eich <brendan@mozilla.org>
- *
- * Alternatively, the contents of this file may be used under the terms of
- * either of the GNU General Public License Version 2 or later (the "GPL"),
- * or the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
- * in which case the provisions of the GPL or the LGPL are applicable instead
- * of those above. If you wish to allow use of your version of this file only
- * under the terms of either the GPL or the LGPL, and not to allow others to
- * use your version of this file under the terms of the MPL, indicate your
- * decision by deleting the provisions above and replace them with the notice
- * and other provisions required by the GPL or the LGPL. If you do not delete
- * the provisions above, a recipient may use your version of this file under
- * the terms of any one of the MPL, the GPL or the LGPL.
- *
- * ***** END LICENSE BLOCK ***** */
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include <new>
 
@@ -47,6 +14,7 @@
 #include "jspropertytree.h"
 #include "jsscope.h"
 
+#include "jsgcinlines.h"
 #include "jsobjinlines.h"
 #include "jsscopeinlines.h"
 
@@ -176,11 +144,11 @@ ReadBarrier(Shape *shape)
 }
 
 Shape *
-PropertyTree::getChild(JSContext *cx, Shape *parent, uint32_t nfixed, const StackShape &child)
+PropertyTree::getChild(JSContext *cx, Shape *parent_, uint32_t nfixed, const StackShape &child)
 {
     Shape *shape;
 
-    JS_ASSERT(parent);
+    JS_ASSERT(parent_);
 
     /*
      * The property tree has extremely low fan-out below its root in
@@ -190,7 +158,7 @@ PropertyTree::getChild(JSContext *cx, Shape *parent, uint32_t nfixed, const Stac
      * |this| can significantly increase fan-out below the property
      * tree root -- see bug 335700 for details.
      */
-    KidsPointer *kidp = &parent->kids;
+    KidsPointer *kidp = &parent_->kids;
     if (kidp->isShape()) {
         shape = kidp->toShape();
         if (shape->matches(child))
@@ -203,8 +171,8 @@ PropertyTree::getChild(JSContext *cx, Shape *parent, uint32_t nfixed, const Stac
         /* If kidp->isNull(), we always insert. */
     }
 
-    RootStackShape childRoot(cx, &child);
-    RootShape parentRoot(cx, &parent);
+    StackShape::AutoRooter childRoot(cx, &child);
+    RootedShape parent(cx, parent_);
 
     shape = newShape(cx);
     if (!shape)
@@ -219,14 +187,14 @@ PropertyTree::getChild(JSContext *cx, Shape *parent, uint32_t nfixed, const Stac
 }
 
 void
-Shape::finalize(JSContext *cx, bool background)
+Shape::finalize(FreeOp *fop)
 {
     if (!inDictionary()) {
         if (parent && parent->isMarked())
             parent->removeChild(this);
 
         if (kids.isHash())
-            cx->delete_(kids.toHash());
+            fop->delete_(kids.toHash());
     }
 }
 
@@ -297,7 +265,6 @@ Shape::dump(JSContext *cx, FILE *fp) const
         fputs("(", fp);
 #define DUMP_FLAG(name, display) if (flags & name) fputs(&(" " #display)[first], fp), first = 0
         DUMP_FLAG(HAS_SHORTID, has_shortid);
-        DUMP_FLAG(METHOD, method);
         DUMP_FLAG(IN_DICTIONARY, in_dictionary);
 #undef  DUMP_FLAG
         fputs(") ", fp);
@@ -337,7 +304,7 @@ Shape::dumpSubtree(JSContext *cx, int level, FILE *fp) const
 }
 
 void
-js::PropertyTree::dumpShapes(JSContext *cx)
+js::PropertyTree::dumpShapes(JSRuntime *rt)
 {
     static bool init = false;
     static FILE *dumpfp = NULL;
@@ -352,13 +319,9 @@ js::PropertyTree::dumpShapes(JSContext *cx)
     if (!dumpfp)
         return;
 
-    JSRuntime *rt = cx->runtime;
     fprintf(dumpfp, "rt->gcNumber = %lu", (unsigned long)rt->gcNumber);
 
-    for (CompartmentsIter c(rt); !c.done(); c.next()) {
-        if (rt->gcCurrentCompartment != NULL && rt->gcCurrentCompartment != c)
-            continue;
-
+    for (gc::GCCompartmentsIter c(rt); !c.done(); c.next()) {
         fprintf(dumpfp, "*** Compartment %p ***\n", (void *)c.get());
 
         /*
@@ -366,7 +329,7 @@ js::PropertyTree::dumpShapes(JSContext *cx)
         HS &h = c->emptyShapes;
         for (HS::Range r = h.all(); !r.empty(); r.popFront()) {
             Shape *empty = r.front();
-            empty->dumpSubtree(cx, 0, dumpfp);
+            empty->dumpSubtree(rt, 0, dumpfp);
             putc('\n', dumpfp);
         }
         */

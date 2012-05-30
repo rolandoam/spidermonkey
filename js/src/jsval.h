@@ -1,88 +1,22 @@
 /* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
  * vim: set ts=4 sw=4 et tw=99 ft=cpp:
  *
- * ***** BEGIN LICENSE BLOCK *****
- * Version: MPL 1.1/GPL 2.0/LGPL 2.1
- *
- * The contents of this file are subject to the Mozilla Public License Version
- * 1.1 (the "License"); you may not use this file except in compliance with
- * the License. You may obtain a copy of the License at
- * http://www.mozilla.org/MPL/
- *
- * Software distributed under the License is distributed on an "AS IS" basis,
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
- * for the specific language governing rights and limitations under the
- * License.
- *
- * The Original Code is Mozilla SpiderMonkey JavaScript 1.9 code, released
- * June 30, 2010
- *
- * The Initial Developer of the Original Code is
- *   the Mozilla Corporation.
- *
- * Contributor(s):
- *   Luke Wagner <lw@mozilla.com>
- *
- * Alternatively, the contents of this file may be used under the terms of
- * either of the GNU General Public License Version 2 or later (the "GPL"),
- * or the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
- * in which case the provisions of the GPL or the LGPL are applicable instead
- * of those above. If you wish to allow use of your version of this file only
- * under the terms of either the GPL or the LGPL, and not to allow others to
- * use your version of this file under the terms of the MPL, indicate your
- * decision by deleting the provisions above and replace them with the notice
- * and other provisions required by the GPL or the LGPL. If you do not delete
- * the provisions above, a recipient may use your version of this file under
- * the terms of any one of the MPL, the GPL or the LGPL.
- *
- * ***** END LICENSE BLOCK ***** */
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #ifndef jsvalimpl_h__
 #define jsvalimpl_h__
+
 /*
  * Implementation details for js::Value in jsapi.h.
  */
+
+#include "mozilla/FloatingPoint.h"
+
 #include "js/Utility.h"
 
 JS_BEGIN_EXTERN_C
-
-/******************************************************************************/
-
-/* To avoid a circular dependency, pull in the necessary pieces of jsnum.h. */
-
-#define JSDOUBLE_SIGNBIT (((uint64_t) 1) << 63)
-#define JSDOUBLE_EXPMASK (((uint64_t) 0x7ff) << 52)
-#define JSDOUBLE_MANTMASK ((((uint64_t) 1) << 52) - 1)
-#define JSDOUBLE_HI32_SIGNBIT   0x80000000
-
-static JS_ALWAYS_INLINE JSBool
-JSDOUBLE_IS_NEGZERO(double d)
-{
-    union {
-        struct {
-#if defined(IS_LITTLE_ENDIAN) && !defined(FPU_IS_ARM_FPA)
-            uint32_t lo, hi;
-#else
-            uint32_t hi, lo;
-#endif
-        } s;
-        double d;
-    } x;
-    if (d != 0)
-        return JS_FALSE;
-    x.d = d;
-    return (x.s.hi & JSDOUBLE_HI32_SIGNBIT) != 0;
-}
-
-static JS_ALWAYS_INLINE JSBool
-JSDOUBLE_IS_INT32(double d, int32_t* pi)
-{
-    if (JSDOUBLE_IS_NEGZERO(d))
-        return JS_FALSE;
-    return d == (*pi = (int32_t)d);
-}
-
-/******************************************************************************/
 
 /*
  * Try to get jsvals 64-bit aligned. We could almost assert that all values are
@@ -115,13 +49,9 @@ JSDOUBLE_IS_INT32(double d, int32_t* pi)
 
 #if defined(_MSC_VER)
 # define JS_ENUM_HEADER(id, type)              enum id : type
-# define JS_ENUM_MEMBER(id, type, value)       id = (type)value,
-# define JS_LAST_ENUM_MEMBER(id, type, value)  id = (type)value
 # define JS_ENUM_FOOTER(id)
 #else
 # define JS_ENUM_HEADER(id, type)              enum id
-# define JS_ENUM_MEMBER(id, type, value)       id = (type)value,
-# define JS_LAST_ENUM_MEMBER(id, type, value)  id = (type)value
 # define JS_ENUM_FOOTER(id)                    __attribute__((packed))
 #endif
 
@@ -275,7 +205,6 @@ typedef uint64_t JSValueShiftedTag;
 typedef enum JSWhyMagic
 {
     JS_ARRAY_HOLE,               /* a hole in a dense array */
-    JS_ARGS_HOLE,                /* a hole in the args object's array */
     JS_NATIVE_ENUMERATE,         /* indicates that a custom enumerate hook forwarded
                                   * to JS_EnumerateState, which really means the object can be
                                   * enumerated like a native object. */
@@ -287,7 +216,9 @@ typedef enum JSWhyMagic
     JS_SERIALIZE_NO_NODE,        /* an empty subnode in the AST serializer */
     JS_LAZY_ARGUMENTS,           /* lazy arguments value on the stack */
     JS_UNASSIGNED_ARGUMENTS,     /* the initial value of callobj.arguments */
+    JS_OPTIMIZED_ARGUMENTS,      /* optimized-away 'arguments' value */
     JS_IS_CONSTRUCTING,          /* magic value passed to natives to indicate construction */
+    JS_OVERWRITTEN_CALLEE,       /* arguments.callee has been overwritten */
     JS_GENERIC_MAGIC             /* for local use */
 } JSWhyMagic;
 
@@ -306,6 +237,7 @@ typedef union jsval_layout
             void           *ptr;
             JSWhyMagic     why;
             size_t         word;
+            uintptr_t      uintptr;
         } payload;
         JSValueTag tag;
     } s;
@@ -333,6 +265,7 @@ typedef union jsval_layout
     double asDouble;
     void *asPtr;
     size_t asWord;
+    uintptr_t asUIntPtr;
 } JSVAL_ALIGNMENT jsval_layout;
 # endif  /* JS_BITS_PER_WORD */
 #else   /* defined(IS_LITTLE_ENDIAN) */
@@ -351,6 +284,7 @@ typedef union jsval_layout
             void           *ptr;
             JSWhyMagic     why;
             size_t         word;
+            uintptr_t      uintptr;
         } payload;
     } s;
     double asDouble;
@@ -375,6 +309,7 @@ typedef union jsval_layout
     double asDouble;
     void *asPtr;
     size_t asWord;
+    uintptr_t asUIntPtr;
 } JSVAL_ALIGNMENT jsval_layout;
 # endif /* JS_BITS_PER_WORD */
 #endif  /* defined(IS_LITTLE_ENDIAN) */

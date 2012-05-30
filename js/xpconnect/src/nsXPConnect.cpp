@@ -1,44 +1,8 @@
 /* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
  *
- * ***** BEGIN LICENSE BLOCK *****
- * Version: MPL 1.1/GPL 2.0/LGPL 2.1
- *
- * The contents of this file are subject to the Mozilla Public License Version
- * 1.1 (the "License"); you may not use this file except in compliance with
- * the License. You may obtain a copy of the License at
- * http://www.mozilla.org/MPL/
- *
- * Software distributed under the License is distributed on an "AS IS" basis,
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
- * for the specific language governing rights and limitations under the
- * License.
- *
- * The Original Code is Mozilla Communicator client code, released
- * March 31, 1998.
- *
- * The Initial Developer of the Original Code is
- * Netscape Communications Corporation.
- * Portions created by the Initial Developer are Copyright (C) 1998
- * the Initial Developer. All Rights Reserved.
- *
- * Contributor(s):
- *   John Bandhauer <jband@netscape.com> (original author)
- *   Pierre Phaneuf <pp@ludusdesign.com>
- *   Nate Nielsen <nielsen@memberwebs.com>
- *
- * Alternatively, the contents of this file may be used under the terms of
- * either of the GNU General Public License Version 2 or later (the "GPL"),
- * or the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
- * in which case the provisions of the GPL or the LGPL are applicable instead
- * of those above. If you wish to allow use of your version of this file only
- * under the terms of either the GPL or the LGPL, and not to allow others to
- * use your version of this file under the terms of the MPL, indicate your
- * decision by deleting the provisions above and replace them with the notice
- * and other provisions required by the GPL or the LGPL. If you do not delete
- * the provisions above, a recipient may use your version of this file under
- * the terms of any one of the MPL, the GPL or the LGPL.
- *
- * ***** END LICENSE BLOCK ***** */
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 /* High level class and public functions implementation. */
 
@@ -63,12 +27,20 @@
 #include "WrapperFactory.h"
 #include "AccessCheck.h"
 
+#ifdef MOZ_JSDEBUGGER
 #include "jsdIDebuggerService.h"
+#endif
 
 #include "XPCQuickStubs.h"
 #include "dombindings.h"
 
+#include "mozilla/dom/BindingUtils.h"
+
 #include "nsWrapperCacheInlines.h"
+#include "nsDOMMutationObserver.h"
+
+using namespace mozilla::dom;
+using namespace xpc;
 
 NS_IMPL_THREADSAFE_ISUPPORTS7(nsXPConnect,
                               nsIXPConnect,
@@ -111,10 +83,7 @@ nsXPConnect::nsXPConnect()
 {
     mRuntime = XPCJSRuntime::newXPCJSRuntime(this);
 
-    nsCycleCollector_registerRuntime(nsIProgrammingLanguage::JAVASCRIPT, this);
-#ifdef DEBUG_CC
-    mJSRoots.ops = nsnull;
-#endif
+    nsCycleCollector_registerJSRuntime(this);
 
     char* reportableEnv = PR_GetEnv("MOZ_REPORT_ALL_JS_EXCEPTIONS");
     if (reportableEnv && *reportableEnv)
@@ -123,7 +92,7 @@ nsXPConnect::nsXPConnect()
 
 nsXPConnect::~nsXPConnect()
 {
-    nsCycleCollector_forgetRuntime(nsIProgrammingLanguage::JAVASCRIPT);
+    nsCycleCollector_forgetJSRuntime();
 
     JSContext *cx = nsnull;
     if (mRuntime) {
@@ -392,37 +361,28 @@ nsXPConnect::Collect(PRUint32 reason, PRUint32 kind)
     // JS objects that are part of cycles the cycle collector breaks will be
     // collected by the next JS.
     //
-    // If DEBUG_CC is not defined the cycle collector will not traverse roots
+    // If WantAllTraces() is false the cycle collector will not traverse roots
     // from category 1 or any JS objects held by them. Any JS objects they hold
     // will already be marked by the JS GC and will thus be colored black
     // themselves. Any C++ objects they hold will have a missing (untraversed)
     // edge from the JS object to the C++ object and so it will be marked black
     // too. This decreases the number of objects that the cycle collector has to
     // deal with.
-    // To improve debugging, if DEBUG_CC is defined all JS objects are
+    // To improve debugging, if WantAllTraces() is true all JS objects are
     // traversed.
 
-    XPCCallContext ccx(NATIVE_CALLER);
-    if (!ccx.IsValid())
-        return;
-
-    JSContext *cx = ccx.GetJSContext();
-
-    // We want to scan the current thread for GC roots only if it was in a
-    // request prior to the Collect call to avoid false positives during the
-    // cycle collection. So to compensate for JS_BeginRequest in
-    // XPCCallContext::Init we disable the conservative scanner if that call
-    // has started the request on this thread.
-    js::AutoSkipConservativeScan ascs(cx);
     MOZ_ASSERT(reason < js::gcreason::NUM_REASONS);
     js::gcreason::Reason gcreason = (js::gcreason::Reason)reason;
+
+    JSRuntime *rt = GetRuntime()->GetJSRuntime();
+    js::PrepareForFullGC(rt);
     if (kind == nsGCShrinking) {
-        js::ShrinkingGC(cx, gcreason);
+        js::ShrinkingGC(rt, gcreason);
     } else if (kind == nsGCIncremental) {
-        js::IncrementalGC(cx, gcreason);
+        js::IncrementalGC(rt, gcreason);
     } else {
         MOZ_ASSERT(kind == nsGCNormal);
-        js::GCForReason(cx, gcreason);
+        js::GCForReason(rt, gcreason);
     }
 }
 
@@ -432,37 +392,6 @@ nsXPConnect::GarbageCollect(PRUint32 reason, PRUint32 kind)
     Collect(reason, kind);
     return NS_OK;
 }
-
-#ifdef DEBUG_CC
-struct NoteJSRootTracer : public JSTracer
-{
-    NoteJSRootTracer(PLDHashTable *aObjects,
-                     nsCycleCollectionTraversalCallback& cb)
-      : mObjects(aObjects),
-        mCb(cb)
-    {
-    }
-    PLDHashTable* mObjects;
-    nsCycleCollectionTraversalCallback& mCb;
-};
-
-static void
-NoteJSRoot(JSTracer *trc, void *thing, JSGCTraceKind kind)
-{
-    if (AddToCCKind(kind)) {
-        NoteJSRootTracer *tracer = static_cast<NoteJSRootTracer*>(trc);
-        PLDHashEntryHdr *entry = PL_DHashTableOperate(tracer->mObjects, thing,
-                                                      PL_DHASH_ADD);
-        if (entry && !reinterpret_cast<PLDHashEntryStub*>(entry)->key) {
-            reinterpret_cast<PLDHashEntryStub*>(entry)->key = thing;
-            tracer->mCb.NoteRoot(nsIProgrammingLanguage::JAVASCRIPT, thing,
-                                 nsXPConnect::GetXPConnect());
-        }
-    } else if (kind != JSTRACE_STRING) {
-        JS_TraceChildren(trc, thing, kind);
-    }
-}
-#endif
 
 struct NoteWeakMapChildrenTracer : public JSTracer
 {
@@ -506,7 +435,7 @@ struct NoteWeakMapsTracer : public js::WeakMapTracer
 };
 
 static void
-TraceWeakMapping(js::WeakMapTracer *trc, JSObject *m, 
+TraceWeakMapping(js::WeakMapTracer *trc, JSObject *m,
                  void *k, JSGCTraceKind kkind,
                  void *v, JSGCTraceKind vkind)
 {
@@ -540,8 +469,7 @@ TraceWeakMapping(js::WeakMapTracer *trc, JSObject *m,
 }
 
 nsresult
-nsXPConnect::BeginCycleCollection(nsCycleCollectionTraversalCallback &cb,
-                                  bool explainLiveExpectedGarbage)
+nsXPConnect::BeginCycleCollection(nsCycleCollectionTraversalCallback &cb)
 {
     // It is important not to call GetSafeJSContext while on the
     // cycle-collector thread since this context will be destroyed
@@ -567,33 +495,8 @@ nsXPConnect::BeginCycleCollection(nsCycleCollectionTraversalCallback &cb,
         gcHasRun = true;
     }
 
-#ifdef DEBUG_CC
-    NS_ASSERTION(!mJSRoots.ops, "Didn't call FinishCycleCollection?");
-
-    if (explainLiveExpectedGarbage) {
-        // Being called from nsCycleCollector::ExplainLiveExpectedGarbage.
-
-        // Record all objects held by the JS runtime. This avoids doing a
-        // complete GC if we're just tracing to explain (from
-        // ExplainLiveExpectedGarbage), which makes the results of cycle
-        // collection identical for DEBUG_CC and non-DEBUG_CC builds.
-        if (!PL_DHashTableInit(&mJSRoots, PL_DHashGetStubOps(), nsnull,
-                               sizeof(PLDHashEntryStub), PL_DHASH_MIN_SIZE)) {
-            mJSRoots.ops = nsnull;
-
-            return NS_ERROR_OUT_OF_MEMORY;
-        }
-
-        NoteJSRootTracer trc(&mJSRoots, cb);
-        JS_TracerInit(&trc, mCycleCollectionContext->GetJSContext(), NoteJSRoot);
-        JS_TraceRuntime(&trc);
-    }
-#else
-    NS_ASSERTION(!explainLiveExpectedGarbage, "Didn't call nsXPConnect::Collect()?");
-#endif
-
     GetRuntime()->AddXPConnectRoots(cb);
- 
+
     NoteWeakMapsTracer trc(GetRuntime()->GetJSRuntime(), TraceWeakMapping, cb);
     js::TraceWeakMaps(&trc);
 
@@ -640,24 +543,9 @@ nsXPConnect::FinishTraverse()
     return NS_OK;
 }
 
-nsresult
-nsXPConnect::FinishCycleCollection()
-{
-#ifdef DEBUG_CC
-    if (mJSRoots.ops) {
-        PL_DHashTableFinish(&mJSRoots);
-        mJSRoots.ops = nsnull;
-    }
-#endif
-
-    return NS_OK;
-}
-
 nsCycleCollectionParticipant *
-nsXPConnect::ToParticipant(void *p)
+nsXPConnect::GetParticipant()
 {
-    if (!AddToCCKind(js_GetGCThingTraceKind(p)))
-        return NULL;
     return this;
 }
 
@@ -666,19 +554,6 @@ nsXPConnect::Root(void *p)
 {
     return NS_OK;
 }
-
-#ifdef DEBUG_CC
-void
-nsXPConnect::PrintAllReferencesTo(void *p)
-{
-#ifdef DEBUG
-    XPCCallContext ccx(NATIVE_CALLER);
-    if (ccx.IsValid())
-        JS_DumpHeap(ccx.GetJSContext(), stdout, nsnull, 0, p,
-                    0x7fffffff, nsnull);
-#endif
-}
-#endif
 
 NS_IMETHODIMP
 nsXPConnect::Unlink(void *p)
@@ -776,17 +651,19 @@ UnmarkGrayChildren(JSTracer *trc, void **thingp, JSGCTraceKind kind)
 }
 
 void
-xpc_UnmarkGrayObjectRecursive(JSObject *obj)
+xpc_UnmarkGrayGCThingRecursive(void *thing, JSGCTraceKind kind)
 {
-    NS_ASSERTION(obj, "Don't pass me null!");
+    MOZ_ASSERT(thing, "Don't pass me null!");
+    MOZ_ASSERT(kind != JSTRACE_SHAPE, "UnmarkGrayGCThingRecursive not intended for Shapes");
 
     // Unmark.
-    js::gc::AsCell(obj)->unmark(js::gc::GRAY);
+    static_cast<js::gc::Cell *>(thing)->unmark(js::gc::GRAY);
 
     // Trace children.
     UnmarkGrayTracer trc;
-    JS_TracerInit(&trc, JS_GetObjectRuntime(obj), UnmarkGrayChildren);
-    JS_TraceChildren(&trc, obj, JSTRACE_OBJECT);
+    JSRuntime *rt = nsXPConnect::GetRuntimeInstance()->GetJSRuntime();
+    JS_TracerInit(&trc, rt, UnmarkGrayChildren);
+    JS_TraceChildren(&trc, thing, kind);
 }
 
 struct TraversalTracer : public JSTracer
@@ -816,7 +693,6 @@ NoteJSChild(JSTracer *trc, void **thingp, JSGCTraceKind kind)
      * parent pointers iteratively, rather than recursively, to avoid overflow.
      */
     if (AddToCCKind(kind)) {
-#if defined(DEBUG)
         if (NS_UNLIKELY(tracer->cb.WantDebugInfo())) {
             // based on DumpNotify in jsapi.c
             if (tracer->debugPrinter) {
@@ -833,8 +709,7 @@ NoteJSChild(JSTracer *trc, void **thingp, JSGCTraceKind kind)
                 tracer->cb.NoteNextEdgeName(static_cast<const char*>(tracer->debugPrintArg));
             }
         }
-#endif
-        tracer->cb.NoteScriptChild(nsIProgrammingLanguage::JAVASCRIPT, thing);
+        tracer->cb.NoteJSChild(thing);
     } else if (kind == JSTRACE_SHAPE) {
         JS_TraceShapeCycleCollectorChildren(trc, thing);
     } else if (kind != JSTRACE_STRING) {
@@ -858,11 +733,12 @@ xpc_MarkInCCGeneration(nsISupports* aVariant, PRUint32 aGeneration)
 }
 
 void
-xpc_UnmarkGrayObject(nsIXPConnectWrappedJS* aWrappedJS)
+xpc_TryUnmarkWrappedGrayObject(nsISupports* aWrappedJS)
 {
-    if (aWrappedJS) {
+    nsCOMPtr<nsIXPConnectWrappedJS> wjs = do_QueryInterface(aWrappedJS);
+    if (wjs) {
         // Unmarks gray JSObject.
-        static_cast<nsXPCWrappedJS*>(aWrappedJS)->GetJSObject();
+        static_cast<nsXPCWrappedJS*>(wjs.get())->GetJSObject();
     }
 }
 
@@ -910,30 +786,7 @@ nsXPConnect::Traverse(void *p, nsCycleCollectionTraversalCallback &cb)
         }
     }
 
-    bool isMarked;
-
-#ifdef DEBUG_CC
-    // Note that the conditions under which we specify GCMarked vs.
-    // GCUnmarked are different between ExplainLiveExpectedGarbage and
-    // the normal case.  In the normal case, we're saying that anything
-    // reachable from a JS runtime root is itself such a root.  This
-    // doesn't actually break anything; it really just does some of the
-    // cycle collector's work for it.  However, when debugging, we
-    // (1) actually need to know what the root is and (2) don't want to
-    // do an extra GC, so we use mJSRoots, built from JS_TraceRuntime,
-    // which produces a different result because we didn't call
-    // JS_TraceChildren to trace everything that was reachable.
-    if (mJSRoots.ops) {
-        // ExplainLiveExpectedGarbage codepath
-        PLDHashEntryHdr* entry =
-            PL_DHashTableOperate(&mJSRoots, p, PL_DHASH_LOOKUP);
-        isMarked = markJSObject || PL_DHASH_ENTRY_IS_BUSY(entry);
-    } else
-#endif
-    {
-        // Normal codepath (matches non-DEBUG_CC codepath).
-        isMarked = markJSObject || !xpc_IsGrayGCThing(p);
-    }
+    bool isMarked = markJSObject || !xpc_IsGrayGCThing(p);
 
     if (cb.WantDebugInfo()) {
         char name[72];
@@ -983,8 +836,8 @@ nsXPConnect::Traverse(void *p, nsCycleCollectionTraversalCallback &cb)
 
     // There's no need to trace objects that have already been marked by the JS
     // GC. Any JS objects hanging from them will already be marked. Only do this
-    // if DEBUG_CC is not defined, else we do want to know about all JS objects
-    // to get better graphs and explanations.
+    // if cb.WantAllTraces() is false, otherwise we do want to know about all JS
+    // objects to get better graphs and explanations.
     if (!cb.WantAllTraces() && isMarked)
         return NS_OK;
 
@@ -1012,10 +865,15 @@ nsXPConnect::Traverse(void *p, nsCycleCollectionTraversalCallback &cb)
              clazz->flags & JSCLASS_PRIVATE_IS_NSISUPPORTS) {
         NS_CYCLE_COLLECTION_NOTE_EDGE_NAME(cb, "xpc_GetJSPrivate(obj)");
         cb.NoteXPCOMChild(static_cast<nsISupports*>(xpc_GetJSPrivate(obj)));
-    } else if (mozilla::dom::binding::instanceIsProxy(obj)) {
+    } else if (binding::instanceIsProxy(obj)) {
         NS_CYCLE_COLLECTION_NOTE_EDGE_NAME(cb, "js::GetProxyPrivate(obj)");
         nsISupports *identity =
             static_cast<nsISupports*>(js::GetProxyPrivate(obj).toPrivate());
+        cb.NoteXPCOMChild(identity);
+    } else if ((clazz->flags & JSCLASS_IS_DOMJSCLASS) &&
+               DOMJSClass::FromJSClass(clazz)->mDOMObjectIsISupports) {
+        NS_CYCLE_COLLECTION_NOTE_EDGE_NAME(cb, "UnwrapDOMObject(obj)");
+        nsISupports *identity = UnwrapDOMObject<nsISupports>(obj, clazz);
         cb.NoteXPCOMChild(identity);
     }
 
@@ -1067,7 +925,7 @@ public:
         cb.DescribeRefCountedNode(refCount, js::SizeOfJSContext(), "JSContext");
         if (JSObject *global = JS_GetGlobalObject(cx)) {
             NS_CYCLE_COLLECTION_NOTE_EDGE_NAME(cb, "[global object]");
-            cb.NoteScriptChild(nsIProgrammingLanguage::JAVASCRIPT, global);
+            cb.NoteJSChild(global);
         }
 
         return NS_OK;
@@ -1125,7 +983,7 @@ nsXPConnect::InitClasses(JSContext * aJSContext, JSObject * aGlobalJSObj)
 
     scope->RemoveWrappedNativeProtos();
 
-    if (!nsXPCComponents::AttachNewComponentsObject(ccx, scope, aGlobalJSObj))
+    if (!nsXPCComponents::AttachComponentsObject(ccx, scope, aGlobalJSObj))
         return UnexpectedFailure(NS_ERROR_FAILURE);
 
     if (XPCPerThreadData::IsMainThread(ccx)) {
@@ -1187,7 +1045,49 @@ TraceXPCGlobal(JSTracer *trc, JSObject *obj)
 
     if (XPCWrappedNativeScope *scope = XPCWrappedNativeScope::GetNativeScope(obj))
         scope->TraceDOMPrototypes(trc);
+
+    mozilla::dom::TraceProtoOrIfaceCache(trc, obj);
 }
+
+#ifdef DEBUG
+#include "mozilla/Preferences.h"
+#include "nsIXULRuntime.h"
+static void
+CheckTypeInference(JSContext *cx, JSClass *clasp, nsIPrincipal *principal)
+{
+    // Check that the global class isn't whitelisted.
+    if (strcmp(clasp->name, "Sandbox") ||
+        strcmp(clasp->name, "nsXBLPrototypeScript compilation scope") ||
+        strcmp(clasp->name, "nsXULPrototypeScript compilation scope"))
+        return;
+
+    // Check that the pref is on.
+    if (!mozilla::Preferences::GetBool("javascript.options.typeinference"))
+        return;
+
+    // Check that we're not chrome.
+    bool isSystem;
+    nsIScriptSecurityManager* ssm;
+    ssm = XPCWrapper::GetSecurityManager();
+    if (NS_FAILED(ssm->IsSystemPrincipal(principal, &isSystem)) || !isSystem)
+        return;
+
+    // Check that safe mode isn't on.
+    bool safeMode;
+    nsCOMPtr<nsIXULRuntime> xr = do_GetService("@mozilla.org/xre/runtime;1");
+    if (!xr) {
+        NS_WARNING("Couldn't get XUL runtime!");
+        return;
+    }
+    if (NS_FAILED(xr->GetInSafeMode(&safeMode)) || safeMode)
+        return;
+
+    // Finally, do the damn assert.
+    MOZ_ASSERT(JS_GetOptions(cx) & JSOPTION_TYPE_INFERENCE);
+}
+#else
+#define CheckTypeInference(cx, clasp, principal) {}
+#endif
 
 nsresult
 xpc_CreateGlobalObject(JSContext *cx, JSClass *clasp,
@@ -1195,29 +1095,19 @@ xpc_CreateGlobalObject(JSContext *cx, JSClass *clasp,
                        bool wantXrays, JSObject **global,
                        JSCompartment **compartment)
 {
+    // Make sure that Type Inference is enabled for everything non-chrome.
+    // Sandboxes and compilation scopes are exceptions. See bug 744034.
+    CheckTypeInference(cx, clasp, principal);
+
     NS_ABORT_IF_FALSE(NS_IsMainThread(), "using a principal off the main thread?");
-    NS_ABORT_IF_FALSE(principal, "bad key");
 
-    XPCCompartmentMap& map = nsXPConnect::GetRuntimeInstance()->GetCompartmentMap();
-    xpc::PtrAndPrincipalHashKey key(ptr, principal);
-    if (!map.Get(&key, compartment)) {
-        xpc::PtrAndPrincipalHashKey *priv_key =
-            new xpc::PtrAndPrincipalHashKey(ptr, principal);
-        xpc::CompartmentPrivate *priv = new xpc::CompartmentPrivate(priv_key, wantXrays);
-        if (!CreateNewCompartment(cx, clasp, principal, priv,
-                                  global, compartment)) {
-            return UnexpectedFailure(NS_ERROR_FAILURE);
-        }
+    xpc::CompartmentPrivate *priv = new xpc::CompartmentPrivate(wantXrays);
+    if (!CreateNewCompartment(cx, clasp, principal, priv, global, compartment))
+        return UnexpectedFailure(NS_ERROR_FAILURE);
 
-        map.Put(&key, *compartment);
-    } else {
-        js::AutoSwitchCompartment sc(cx, *compartment);
-
-        JSObject *tempGlobal = JS_NewGlobalObject(cx, clasp);
-        if (!tempGlobal)
-            return UnexpectedFailure(NS_ERROR_FAILURE);
-        *global = tempGlobal;
-    }
+    XPCCompartmentSet& set = nsXPConnect::GetRuntimeInstance()->GetCompartmentSet();
+    if (!set.put(*compartment))
+        return UnexpectedFailure(NS_ERROR_FAILURE);
 
 #ifdef DEBUG
     // Verify that the right trace hook is called. Note that this doesn't
@@ -1233,6 +1123,10 @@ xpc_CreateGlobalObject(JSContext *cx, JSClass *clasp,
         NS_ABORT_IF_FALSE(trc.ok, "Trace hook needs to call TraceXPCGlobal if JSCLASS_XPCONNECT_GLOBAL is set.");
     }
 #endif
+
+    if (clasp->flags & JSCLASS_DOM_GLOBAL) {
+        AllocateProtoOrIfaceCache(*global);
+    }
 
     return NS_OK;
 }
@@ -1279,7 +1173,7 @@ nsXPConnect::InitClassesWithNewWrappedGlobal(JSContext * aJSContext,
 
     if (!(aFlags & nsIXPConnect::OMIT_COMPONENTS_OBJECT)) {
         // XPCCallContext gives us an active request needed to save/restore.
-        if (!nsXPCComponents::AttachNewComponentsObject(ccx, wrappedGlobal->GetScope(), global))
+        if (!nsXPCComponents::AttachComponentsObject(ccx, wrappedGlobal->GetScope(), global))
             return UnexpectedFailure(NS_ERROR_FAILURE);
 
         if (XPCPerThreadData::IsMainThread(ccx)) {
@@ -1288,7 +1182,12 @@ nsXPConnect::InitClassesWithNewWrappedGlobal(JSContext * aJSContext,
         }
     }
 
-    *_retval = wrappedGlobal.forget().get();
+    // Stuff coming through this path always ends up as a DOM global.
+    // XXX Someone who knows why we can assert this should re-check
+    //     (after bug 720580).
+    MOZ_ASSERT(js::GetObjectClass(global)->flags & JSCLASS_DOM_GLOBAL);
+
+    wrappedGlobal.forget(_retval);
     return NS_OK;
 }
 
@@ -2016,7 +1915,7 @@ nsXPConnect::CreateSandbox(JSContext *cx, nsIPrincipal *principal,
     jsval rval = JSVAL_VOID;
     AUTO_MARK_JSVAL(ccx, &rval);
 
-    nsresult rv = xpc_CreateSandboxObject(cx, &rval, principal, NULL, false,
+    nsresult rv = xpc_CreateSandboxObject(cx, &rval, principal, NULL, false, true,
                                           EmptyCString());
     NS_ASSERTION(NS_FAILED(rv) || !JSVAL_IS_PRIMITIVE(rval),
                  "Bad return value from xpc_CreateSandboxObject()!");
@@ -2314,6 +2213,7 @@ nsXPConnect::AfterProcessNextEvent(nsIThreadInternal *aThread,
     // Call cycle collector occasionally.
     MOZ_ASSERT(NS_IsMainThread());
     nsJSContext::MaybePokeCC();
+    nsDOMMutationObserver::HandleMutations();
 
     return Pop(nsnull);
 }
@@ -2345,18 +2245,6 @@ nsXPConnect::SetReportAllJSExceptions(bool newval)
         gReportAllJSExceptions = newval ? 2 : 0;
 
     return NS_OK;
-}
-
-/* [noscript, notxpcom] bool defineDOMQuickStubs (in JSContextPtr cx, in JSObjectPtr proto, in PRUint32 flags, in PRUint32 interfaceCount, [array, size_is (interfaceCount)] in nsIIDPtr interfaceArray); */
-NS_IMETHODIMP_(bool)
-nsXPConnect::DefineDOMQuickStubs(JSContext * cx,
-                                 JSObject * proto,
-                                 PRUint32 flags,
-                                 PRUint32 interfaceCount,
-                                 const nsIID * *interfaceArray)
-{
-    return DOM_DefineQuickStubs(cx, proto, flags,
-                                interfaceCount, interfaceArray);
 }
 
 /* attribute JSRuntime runtime; */
@@ -2439,12 +2327,14 @@ nsXPConnect::Peek(JSContext * *_retval)
         return NS_ERROR_FAILURE;
     }
 
-    *_retval = data->GetJSContextStack()->Peek();
+    *_retval = xpc_UnmarkGrayContext(data->GetJSContextStack()->Peek());
     return NS_OK;
 }
 
+#ifdef MOZ_JSDEBUGGER
 void
-nsXPConnect::CheckForDebugMode(JSRuntime *rt) {
+nsXPConnect::CheckForDebugMode(JSRuntime *rt)
+{
     JSContext *cx = NULL;
 
     if (gDebugMode == gDesiredDebugMode) {
@@ -2478,17 +2368,8 @@ nsXPConnect::CheckForDebugMode(JSRuntime *rt) {
         } adc(cx);
         JSAutoRequest ar(cx);
 
-        const js::CompartmentVector &vector = js::GetRuntimeCompartments(rt);
-        for (JSCompartment * const *p = vector.begin(); p != vector.end(); ++p) {
-            JSCompartment *comp = *p;
-            if (!JS_GetCompartmentPrincipals(comp)) {
-                /* Ignore special compartments (atoms, JSD compartments) */
-                continue;
-            }
-
-            if (!JS_SetDebugModeForCompartment(cx, comp, gDesiredDebugMode))
-                goto fail;
-        }
+        if (!JS_SetDebugModeForAllCompartments(cx, gDesiredDebugMode))
+            goto fail;
     }
 
     if (gDesiredDebugMode) {
@@ -2511,6 +2392,14 @@ fail:
         JS_SetRuntimeDebugMode(rt, false);
     gDesiredDebugMode = gDebugMode = false;
 }
+#else //MOZ_JSDEBUGGER not defined
+void
+nsXPConnect::CheckForDebugMode(JSRuntime *rt)
+{
+    gDesiredDebugMode = gDebugMode = false;
+}
+#endif //#ifdef MOZ_JSDEBUGGER
+
 
 NS_EXPORT_(void)
 xpc_ActivateDebugMode()
@@ -2534,7 +2423,7 @@ nsXPConnect::Pop(JSContext * *_retval)
 
     JSContext *cx = data->GetJSContextStack()->Pop();
     if (_retval)
-        *_retval = cx;
+        *_retval = xpc_UnmarkGrayContext(cx);
     return NS_OK;
 }
 
@@ -2569,21 +2458,17 @@ nsXPConnect::Push(JSContext * cx)
      return data->GetJSContextStack()->Push(cx) ? NS_OK : NS_ERROR_OUT_OF_MEMORY;
 }
 
-/* attribute JSContext SafeJSContext; */
-NS_IMETHODIMP
-nsXPConnect::GetSafeJSContext(JSContext * *aSafeJSContext)
+/* virtual */
+JSContext*
+nsXPConnect::GetSafeJSContext()
 {
-    NS_ASSERTION(aSafeJSContext, "loser!");
-
-    XPCPerThreadData* data = XPCPerThreadData::GetData(nsnull);
+    XPCPerThreadData *data = XPCPerThreadData::GetData(NULL);
 
     if (!data) {
-        *aSafeJSContext = nsnull;
-        return NS_ERROR_FAILURE;
+        return NULL;
     }
 
-    *aSafeJSContext = data->GetJSContextStack()->GetSafeJSContext();
-    return *aSafeJSContext ? NS_OK : NS_ERROR_FAILURE;
+    return data->GetJSContextStack()->GetSafeJSContext();
 }
 
 nsIPrincipal*
@@ -2726,6 +2611,28 @@ DumpJSHeap(FILE* file)
 }
 #endif
 
+void
+SetLocationForGlobal(JSObject *global, const nsACString& location)
+{
+    MOZ_ASSERT(global);
+
+    CompartmentPrivate *priv = GetCompartmentPrivate(global);
+    MOZ_ASSERT(priv, "No compartment private");
+
+    priv->SetLocation(location);
+}
+
+void
+SetLocationForGlobal(JSObject *global, nsIURI *locationURI)
+{
+    MOZ_ASSERT(global);
+
+    CompartmentPrivate *priv = GetCompartmentPrivate(global);
+    MOZ_ASSERT(priv, "No compartment private");
+
+    priv->SetLocation(locationURI);
+}
+
 } // namespace xpc
 
 NS_IMETHODIMP
@@ -2768,18 +2675,159 @@ nsXPConnect::GetTelemetryValue(JSContext *cx, jsval *rval)
 NS_IMETHODIMP
 nsXPConnect::NotifyDidPaint()
 {
-    JSRuntime *rt = mRuntime->GetJSRuntime();
-    if (!js::WantGCSlice(rt))
-        return NS_OK;
-
-    XPCCallContext ccx(NATIVE_CALLER);
-    if (!ccx.IsValid())
-        return UnexpectedFailure(NS_ERROR_FAILURE);
-
-    JSContext *cx = ccx.GetJSContext();
-
-    js::NotifyDidPaint(cx);
+    js::NotifyDidPaint(GetRuntime()->GetJSRuntime());
     return NS_OK;
+}
+
+const PRUint8 HAS_PRINCIPALS_FLAG               = 1;
+const PRUint8 HAS_ORIGIN_PRINCIPALS_FLAG        = 2;
+
+static nsresult
+WriteScriptOrFunction(nsIObjectOutputStream *stream, JSContext *cx,
+                      JSScript *script, JSObject *functionObj)
+{
+    // Exactly one of script or functionObj must be given
+    MOZ_ASSERT(!script != !functionObj);
+
+    if (!script)
+        script = JS_GetFunctionScript(cx, JS_GetObjectFunction(functionObj));
+
+    nsIPrincipal *principal =
+        nsJSPrincipals::get(JS_GetScriptPrincipals(script));
+    nsIPrincipal *originPrincipal =
+        nsJSPrincipals::get(JS_GetScriptOriginPrincipals(script));
+
+    PRUint8 flags = 0;
+    if (principal)
+        flags |= HAS_PRINCIPALS_FLAG;
+
+    // Optimize for the common case when originPrincipals == principals. As
+    // originPrincipals is set to principals when the former is null we can
+    // simply skip the originPrincipals when they are the same as principals.
+    if (originPrincipal && originPrincipal != principal)
+        flags |= HAS_ORIGIN_PRINCIPALS_FLAG;
+
+    nsresult rv = stream->Write8(flags);
+    if (NS_FAILED(rv))
+        return rv;
+
+    if (flags & HAS_PRINCIPALS_FLAG) {
+        rv = stream->WriteObject(principal, true);
+        if (NS_FAILED(rv))
+            return rv;
+    }
+
+    if (flags & HAS_ORIGIN_PRINCIPALS_FLAG) {
+        rv = stream->WriteObject(originPrincipal, true);
+        if (NS_FAILED(rv))
+            return rv;
+    }
+
+    uint32_t size;
+    void* data;
+    {
+        JSAutoRequest ar(cx);
+        if (functionObj)
+            data = JS_EncodeInterpretedFunction(cx, functionObj, &size);
+        else
+            data = JS_EncodeScript(cx, script, &size);
+    }
+
+    if (!data)
+        return NS_ERROR_OUT_OF_MEMORY;
+    MOZ_ASSERT(size);
+    rv = stream->Write32(size);
+    if (NS_SUCCEEDED(rv))
+        rv = stream->WriteBytes(static_cast<char *>(data), size);
+    js_free(data);
+
+    return rv;
+}
+
+static nsresult
+ReadScriptOrFunction(nsIObjectInputStream *stream, JSContext *cx,
+                     JSScript **scriptp, JSObject **functionObjp)
+{
+    // Exactly one of script or functionObj must be given
+    MOZ_ASSERT(!scriptp != !functionObjp);
+
+    PRUint8 flags;
+    nsresult rv = stream->Read8(&flags);
+    if (NS_FAILED(rv))
+        return rv;
+
+    nsJSPrincipals* principal = nsnull;
+    nsCOMPtr<nsIPrincipal> readPrincipal;
+    if (flags & HAS_PRINCIPALS_FLAG) {
+        rv = stream->ReadObject(true, getter_AddRefs(readPrincipal));
+        if (NS_FAILED(rv))
+            return rv;
+        principal = nsJSPrincipals::get(readPrincipal);
+    }
+
+    nsJSPrincipals* originPrincipal = nsnull;
+    nsCOMPtr<nsIPrincipal> readOriginPrincipal;
+    if (flags & HAS_ORIGIN_PRINCIPALS_FLAG) {
+        rv = stream->ReadObject(true, getter_AddRefs(readOriginPrincipal));
+        if (NS_FAILED(rv))
+            return rv;
+        originPrincipal = nsJSPrincipals::get(readOriginPrincipal);
+    }
+
+    PRUint32 size;
+    rv = stream->Read32(&size);
+    if (NS_FAILED(rv))
+        return rv;
+
+    char* data;
+    rv = stream->ReadBytes(size, &data);
+    if (NS_FAILED(rv))
+        return rv;
+
+    {
+        JSAutoRequest ar(cx);
+        if (scriptp) {
+            JSScript *script = JS_DecodeScript(cx, data, size, principal, originPrincipal);
+            if (!script)
+                rv = NS_ERROR_OUT_OF_MEMORY;
+            else
+                *scriptp = script;
+        } else {
+            JSObject *funobj = JS_DecodeInterpretedFunction(cx, data, size,
+                                                            principal, originPrincipal);
+            if (!funobj)
+                rv = NS_ERROR_OUT_OF_MEMORY;
+            else
+                *functionObjp = funobj;
+        }
+    }
+
+    nsMemory::Free(data);
+    return rv;
+}
+
+NS_IMETHODIMP
+nsXPConnect::WriteScript(nsIObjectOutputStream *stream, JSContext *cx, JSScript *script)
+{
+    return WriteScriptOrFunction(stream, cx, script, nsnull);
+}
+
+NS_IMETHODIMP
+nsXPConnect::ReadScript(nsIObjectInputStream *stream, JSContext *cx, JSScript **scriptp)
+{
+    return ReadScriptOrFunction(stream, cx, scriptp, nsnull);
+}
+
+NS_IMETHODIMP
+nsXPConnect::WriteFunction(nsIObjectOutputStream *stream, JSContext *cx, JSObject *functionObj)
+{
+    return WriteScriptOrFunction(stream, cx, nsnull, functionObj);
+}
+
+NS_IMETHODIMP
+nsXPConnect::ReadFunction(nsIObjectInputStream *stream, JSContext *cx, JSObject **functionObjp)
+{
+    return ReadScriptOrFunction(stream, cx, nsnull, functionObjp);
 }
 
 /* These are here to be callable from a debugger */
@@ -2818,30 +2866,29 @@ JS_EXPORT_API(void) DumpJSObject(JSObject* obj)
     xpc_DumpJSObject(obj);
 }
 
-JS_EXPORT_API(void) DumpJSValue(jsval val)
+JS_EXPORT_API(void) DumpJSValue(JS::Value val)
 {
-    printf("Dumping 0x%llu.\n", (long long) JSVAL_TO_IMPL(val).asBits);
-    if (JSVAL_IS_NULL(val)) {
+    printf("Dumping 0x%llu.\n", (long long) val.asRawBits());
+    if (val.isNull()) {
         printf("Value is null\n");
-    } else if (JSVAL_IS_OBJECT(val) || JSVAL_IS_NULL(val)) {
+    } else if (val.isObject()) {
         printf("Value is an object\n");
-        JSObject* obj = JSVAL_TO_OBJECT(val);
-        DumpJSObject(obj);
-    } else if (JSVAL_IS_NUMBER(val)) {
+        DumpJSObject(&val.toObject());
+    } else if (val.isNumber()) {
         printf("Value is a number: ");
-        if (JSVAL_IS_INT(val))
-          printf("Integer %i\n", JSVAL_TO_INT(val));
-        else if (JSVAL_IS_DOUBLE(val))
-          printf("Floating-point value %f\n", JSVAL_TO_DOUBLE(val));
-    } else if (JSVAL_IS_STRING(val)) {
+        if (val.isInt32())
+          printf("Integer %i\n", val.toInt32());
+        else if (val.isDouble())
+          printf("Floating-point value %f\n", val.toDouble());
+    } else if (val.isString()) {
         printf("Value is a string: ");
         putc('<', stdout);
-        JS_FileEscapedString(stdout, JSVAL_TO_STRING(val), 0);
+        JS_FileEscapedString(stdout, val.toString(), 0);
         fputs(">\n", stdout);
-    } else if (JSVAL_IS_BOOLEAN(val)) {
+    } else if (val.isBoolean()) {
         printf("Value is boolean: ");
-        printf(JSVAL_TO_BOOLEAN(val) ? "true" : "false");
-    } else if (JSVAL_IS_VOID(val)) {
+        printf(val.isTrue() ? "true" : "false");
+    } else if (val.isUndefined()) {
         printf("Value is undefined\n");
     } else {
         printf("No idea what this value is.\n");

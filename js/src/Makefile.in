@@ -1,41 +1,8 @@
 # -*- Mode: makefile -*-
 #
-# ***** BEGIN LICENSE BLOCK *****
-# Version: MPL 1.1/GPL 2.0/LGPL 2.1
-#
-# The contents of this file are subject to the Mozilla Public License Version
-# 1.1 (the "License"); you may not use this file except in compliance with
-# the License. You may obtain a copy of the License at
-# http://www.mozilla.org/MPL/
-#
-# Software distributed under the License is distributed on an "AS IS" basis,
-# WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
-# for the specific language governing rights and limitations under the
-# License.
-#
-# The Original Code is Mozilla Communicator client code, released
-# March 31, 1998.
-#
-# The Initial Developer of the Original Code is
-# Netscape Communications Corporation.
-# Portions created by the Initial Developer are Copyright (C) 1998
-# the Initial Developer. All Rights Reserved.
-#
-# Contributor(s):
-#
-# Alternatively, the contents of this file may be used under the terms of
-# either of the GNU General Public License Version 2 or later (the "GPL"),
-# or the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
-# in which case the provisions of the GPL or the LGPL are applicable instead
-# of those above. If you wish to allow use of your version of this file only
-# under the terms of either the GPL or the LGPL, and not to allow others to
-# use your version of this file under the terms of the MPL, indicate your
-# decision by deleting the provisions above and replace them with the notice
-# and other provisions required by the GPL or the LGPL. If you do not delete
-# the provisions above, a recipient may use your version of this file under
-# the terms of any one of the MPL, the GPL or the LGPL.
-#
-# ***** END LICENSE BLOCK *****
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 DEPTH		= .
 topsrcdir	= @top_srcdir@
@@ -71,7 +38,7 @@ LIBRARY_NAME	    = mozjs
 STATIC_LIBRARY_NAME = js_static
 GRE_MODULE	    = 1
 
-LIBS		= $(NSPR_LIBS) 
+LIBS		= $(NSPR_LIBS)
 
 ifeq ($(OS_ARCH),WINNT)
 NO_PROFILE_GUIDED_OPTIMIZE = 1
@@ -118,7 +85,6 @@ CPPSRCS		= \
 		jsfriendapi.cpp \
 		jsfun.cpp \
 		jsgc.cpp \
-		jsgcmark.cpp \
 		jscrashreport.cpp \
 		jshash.cpp \
 		jsinfer.cpp \
@@ -146,10 +112,10 @@ CPPSRCS		= \
 		jswatchpoint.cpp \
 		jsweakmap.cpp \
 		jswrapper.cpp \
-		jsxdrapi.cpp \
 		jsxml.cpp \
 		prmjtime.cpp \
 		sharkctl.cpp \
+		ArgumentsObject.cpp \
 		ScopeObject.cpp \
 		Debugger.cpp \
 		GlobalObject.cpp \
@@ -165,6 +131,7 @@ CPPSRCS		= \
 		Parser.cpp \
 		SemanticAnalysis.cpp \
 		TokenStream.cpp \
+		TreeContext.cpp \
 		TestingFunctions.cpp \
 		LifoAlloc.cpp \
 		MapObject.cpp \
@@ -172,10 +139,12 @@ CPPSRCS		= \
 		RegExpObject.cpp \
 		RegExpStatics.cpp \
 		RegExp.cpp \
+		Marking.cpp \
 		Memory.cpp \
 		Statistics.cpp \
 		StringBuffer.cpp \
 		Unicode.cpp \
+		Xdr.cpp \
 		$(NULL)
 
 # Changes to internal header files, used externally, massively slow down
@@ -188,13 +157,13 @@ INSTALLED_HEADERS = \
 		jsalloc.h \
 		jsapi.h \
 		jsatom.h \
+		jsatom.tbl \
 		jsclass.h \
 		jsclist.h \
 		jsdbgapi.h \
 		jsdhash.h \
 		jsfriendapi.h \
 		jsgc.h \
-		jscell.h \
 		jshash.h \
 		jslock.h \
 		json.h \
@@ -203,12 +172,10 @@ INSTALLED_HEADERS = \
 		jsproto.tbl \
 		jsprvtd.h \
 		jspubtd.h \
-		jstypedarray.h \
 		jstypes.h \
 		jsutil.h \
 		jsversion.h \
 		jswrapper.h \
-		jsxdrapi.h \
 		jsval.h \
 		$(NULL)
 
@@ -223,8 +190,10 @@ EXPORTS_ds = \
 		$(NULL)
 
 EXPORTS_gc = \
-		Statistics.h \
 		Barrier.h \
+		Heap.h \
+		Root.h \
+		Statistics.h \
 		$(NULL)
 
 ######################################################
@@ -255,8 +224,9 @@ EXPORTS_js = \
 ###############################################
 # BEGIN include sources for low-level code shared with mfbt
 #
-VPATH += $(srcdir)/../../mfbt
-include $(srcdir)/../../mfbt/exported_headers.mk
+MFBT_ROOT = $(srcdir)/../../mfbt
+VPATH += $(MFBT_ROOT)
+include $(MFBT_ROOT)/exported_headers.mk
 
 ifdef ENABLE_METHODJIT
 
@@ -319,67 +289,23 @@ endif
 endif
 
 ###############################################
-# BEGIN include sources for V8 dtoa
-#
-VPATH += 	$(srcdir)/v8-dtoa \
-		$(NONE)
-
-CPPSRCS += 	checks.cc \
-		conversions.cc \
-		diy-fp.cc \
-		v8-dtoa.cc \
-		fast-dtoa.cc \
-		platform.cc \
-		utils.cc \
-		$(NONE)
-
-#
-# END enclude sources for V8 dtoa
-#############################################
-
-# For architectures without YARR JIT, PCRE is faster than the YARR
-# interpreter (bug 684559).
-
-ifeq (,$(filter arm% sparc %86 x86_64 mips%,$(TARGET_CPU)))
-
-VPATH +=        $(srcdir)/yarr/pcre \
-		$(NULL)
-
-CPPSRCS += \
-                pcre_compile.cpp \
-                pcre_exec.cpp \
-                pcre_tables.cpp \
-                pcre_xclass.cpp \
-                pcre_ucp_searchfuncs.cpp \
-		$(NULL)
-else
-
-###############################################
 # BEGIN include sources for the Nitro assembler
 #
-
-ENABLE_YARR_JIT = 1
 
 VPATH += 	$(srcdir)/assembler \
 		$(srcdir)/assembler/wtf \
 		$(srcdir)/assembler/jit \
-		$(srcdir)/assembler/assembler \
-		$(srcdir)/methodjit \
 		$(srcdir)/yarr \
 		$(NONE)
 
 CPPSRCS += 	ExecutableAllocator.cpp \
-		ARMAssembler.cpp \
-		MacroAssemblerARM.cpp \
-		MacroAssemblerX86Common.cpp \
 		PageBlock.cpp \
 		YarrInterpreter.cpp \
-		YarrJIT.cpp \
 		YarrPattern.cpp \
 		YarrSyntaxChecker.cpp \
 		$(NONE)
 
-ifdef MOZ_DEBUG
+ifdef ENABLE_METHODJIT_SPEW
 CPPSRCS += Logging.cpp
 endif
 
@@ -399,6 +325,19 @@ CPPSRCS += ExecutableAllocatorOS2.cpp \
            $(NONE)
 endif
 
+ifneq (,$(filter arm% sparc %86 x86_64 mips%,$(TARGET_CPU)))
+ENABLE_YARR_JIT = 1
+
+VPATH += 	$(srcdir)/assembler/assembler \
+		$(srcdir)/methodjit \
+		$(NONE)
+
+CPPSRCS +=	ARMAssembler.cpp \
+		MacroAssemblerARM.cpp \
+		MacroAssemblerX86Common.cpp \
+		YarrJIT.cpp \
+		$(NONE)
+
 ifeq (86, $(findstring 86,$(TARGET_CPU)))
 ifeq (x86_64, $(TARGET_CPU))
 #CPPSRCS		+= only_on_x86_64.cpp
@@ -409,11 +348,12 @@ endif
 ifeq (arm, $(TARGET_CPU))
 #CPPSRCS		+= only_on_arm.cpp
 endif
+
+endif
+
 #
 # END enclude sources for the Nitro assembler
 #############################################
-
-endif
 
 ifdef JS_HAS_CTYPES
 VPATH += $(srcdir)/ctypes
@@ -449,6 +389,8 @@ endif
 endif
 
 endif # JS_HAS_CTYPES
+
+LOCAL_INCLUDES += -I$(MFBT_ROOT)/double-conversion
 
 ifdef HAVE_DTRACE
 INSTALLED_HEADERS += \
@@ -493,7 +435,7 @@ include $(topsrcdir)/config/config.mk
 ifeq (,$(MOZ_GLUE_PROGRAM_LDFLAGS))
 # When building standalone, we need to include mfbt sources, and to declare
 # "exported" mfbt symbols on its behalf when we use its headers.
-include $(srcdir)/../../mfbt/sources.mk
+include $(MFBT_ROOT)/sources.mk
 DEFINES += -DIMPL_MFBT
 endif
 
@@ -505,9 +447,11 @@ endif
 
 # Define keyword generator before rules.mk, see bug 323979 comment 50
 
+HOST_CPPSRCS += jskwgen.cpp
 HOST_SIMPLE_PROGRAMS += host_jskwgen$(HOST_BIN_SUFFIX)
 GARBAGE += jsautokw.h host_jskwgen$(HOST_BIN_SUFFIX)
 
+HOST_CPPSRCS += jsoplengen.cpp
 HOST_SIMPLE_PROGRAMS += host_jsoplengen$(HOST_BIN_SUFFIX)
 GARBAGE += jsautooplen.h host_jsoplengen$(HOST_BIN_SUFFIX)
 
@@ -621,10 +565,17 @@ ifneq ($(OS_ARCH),WINNT) # FIXME: this should be made work on Windows too.
 #check:: check-malloc-function-usage FIXME: disable on JM until closer to merge time.
 endif
 
+ifdef MOZ_VALGRIND
+ifndef MOZ_ASAN
+JITTEST_VALGRIND_FLAG = --valgrind
+endif
+endif
+
 JITFLAGS = ,m,am,amd,n,mn,amn,amdn,mdn
 check-jit-test::
 	$(wildcard $(RUN_TEST_PROGRAM)) $(PYTHON) -u $(srcdir)/jit-test/jit_test.py \
-	        --valgrind --no-slow --no-progress --tinderbox --jitflags=$(JITFLAGS) $(DIST)/bin/js$(BIN_SUFFIX)
+	        --no-slow --no-progress --tinderbox --jitflags=$(JITFLAGS) $(JITTEST_VALGRIND_FLAG) \
+	        $(DIST)/bin/js$(BIN_SUFFIX)
 
 check:: check-jit-test
 
@@ -655,7 +606,7 @@ check-jstests:
 #   Bug 652154: On Windows, SM(!m !t) don't work because of path problems with
 #				their unusual directory layout
 #
-#   Bug 652155: On Mac, SM(d) doesn't work for unknown reasons 
+#   Bug 652155: On Mac, SM(d) doesn't work for unknown reasons
 
 ifeq ($(OS_ARCH),WINNT)
 ifdef ENABLE_METHODJIT
@@ -783,7 +734,7 @@ endif
 # - EXTRA_DSO_LDOPTS includes the NSPR -L and -l flags.
 # - OS_LIBS includes libraries selected by the configure script.
 # - EXTRA_LIBS includes libraries selected by this Makefile.
-JS_CONFIG_LIBS=$(EXTRA_DSO_LDOPTS) $(OS_LIBS) $(EXTRA_LIBS) 
+JS_CONFIG_LIBS=$(EXTRA_DSO_LDOPTS) $(OS_LIBS) $(EXTRA_LIBS)
 
 # The configure script invokes this rule explicitly at configure time!
 # It's important that js-config be ready by the time we're done
@@ -831,6 +782,7 @@ endif
 ifneq (,$(IMPORT_LIBRARY))
 	$(SYSINSTALL) $(IMPORT_LIBRARY) $(DESTDIR)$(libdir)
 endif
+	$(MAKE) -C shell install
 
 # Extra dependancies and rules for auto-generated headers
 host_jskwgen.$(OBJ_SUFFIX): jsversion.h jskeyword.tbl

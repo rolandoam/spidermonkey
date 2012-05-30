@@ -1,46 +1,20 @@
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
  *
- * ***** BEGIN LICENSE BLOCK *****
- * Version: MPL 1.1/GPL 2.0/LGPL 2.1
- *
- * The contents of this file are subject to the Mozilla Public License Version
- * 1.1 (the "License"); you may not use this file except in compliance with
- * the License. You may obtain a copy of the License at
- * http://www.mozilla.org/MPL/
- *
- * Software distributed under the License is distributed on an "AS IS" basis,
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
- * for the specific language governing rights and limitations under the
- * License.
- *
- * The Original Code is Mozilla Communicator client code, released
- * March 31, 1998.
- *
- * The Initial Developer of the Original Code is
- * Netscape Communications Corporation.
- * Portions created by the Initial Developer are Copyright (C) 1998
- * the Initial Developer. All Rights Reserved.
- *
- * Contributor(s):
- *   IBM Corp.
- *
- * Alternatively, the contents of this file may be used under the terms of
- * either of the GNU General Public License Version 2 or later (the "GPL"),
- * or the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
- * in which case the provisions of the GPL or the LGPL are applicable instead
- * of those above. If you wish to allow use of your version of this file only
- * under the terms of either the GPL or the LGPL, and not to allow others to
- * use your version of this file under the terms of the MPL, indicate your
- * decision by deleting the provisions above and replace them with the notice
- * and other provisions required by the GPL or the LGPL. If you do not delete
- * the provisions above, a recipient may use your version of this file under
- * the terms of any one of the MPL, the GPL or the LGPL.
- *
- * ***** END LICENSE BLOCK ***** */
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 /*
  * JS number type and wrapper class.
  */
+
+#include "mozilla/FloatingPoint.h"
+#include "mozilla/RangedPtr.h"
+
+#include "double-conversion.h"
+// Avoid warnings about ASSERT being defined by the assembler as well.
+#undef ASSERT
+
 #ifdef XP_OS2
 #define _PC_53  PC_53
 #define _MCW_EM MCW_EM
@@ -51,8 +25,6 @@
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
-
-#include "mozilla/RangedPtr.h"
 
 #include "jstypes.h"
 #include "jsutil.h"
@@ -73,6 +45,8 @@
 
 #include "vm/GlobalObject.h"
 #include "vm/MethodGuard.h"
+#include "vm/NumericConversions.h"
+#include "vm/StringBuffer.h"
 
 #include "jsatominlines.h"
 #include "jsinferinlines.h"
@@ -82,7 +56,6 @@
 #include "vm/MethodGuard-inl.h"
 #include "vm/NumberObject-inl.h"
 #include "vm/String-inl.h"
-#include "vm/StringBuffer-inl.h"
 
 using namespace js;
 using namespace js::types;
@@ -266,7 +239,7 @@ num_isNaN(JSContext *cx, unsigned argc, Value *vp)
     double x;
     if (!ToNumber(cx, vp[2], &x))
         return false;
-    vp->setBoolean(JSDOUBLE_IS_NaN(x));
+    vp->setBoolean(MOZ_DOUBLE_IS_NaN(x));
     return JS_TRUE;
 }
 
@@ -280,7 +253,7 @@ num_isFinite(JSContext *cx, unsigned argc, Value *vp)
     double x;
     if (!ToNumber(cx, vp[2], &x))
         return JS_FALSE;
-    vp->setBoolean(JSDOUBLE_IS_FINITE(x));
+    vp->setBoolean(MOZ_DOUBLE_IS_FINITE(x));
     return JS_TRUE;
 }
 
@@ -377,7 +350,7 @@ js::num_parseInt(JSContext *cx, unsigned argc, Value *vp)
         return true;
     }
 
-    if (args.length() == 1 || 
+    if (args.length() == 1 ||
         (args[1].isInt32() && (args[1].toInt32() == 0 || args[1].toInt32() == 10))) {
         if (args[0].isInt32()) {
             args.rval() = args[0];
@@ -390,7 +363,7 @@ js::num_parseInt(JSContext *cx, unsigned argc, Value *vp)
          *
          * To preserve this behaviour, we can't use the fast-path when string >
          * 1e21, or else the result would be |NeM|.
-         * 
+         *
          * The same goes for values smaller than 1.0e-6, because the string would be in
          * the form of "Ne-M".
          */
@@ -447,13 +420,6 @@ js::num_parseInt(JSContext *cx, unsigned argc, Value *vp)
     args.rval().setNumber(number);
     return true;
 }
-
-const char js_Infinity_str[]   = "Infinity";
-const char js_NaN_str[]        = "NaN";
-const char js_isNaN_str[]      = "isNaN";
-const char js_isFinite_str[]   = "isFinite";
-const char js_parseFloat_str[] = "parseFloat";
-const char js_parseInt_str[]   = "parseInt";
 
 static JSFunctionSpec number_functions[] = {
     JS_FN(js_isNaN_str,         num_isNaN,           1,0),
@@ -886,7 +852,7 @@ enum nc_slot {
  * using union jsdpun.
  */
 static JSConstDoubleSpec number_constants[] = {
-    {0,                         js_NaN_str,          0,{0,0,0}},
+    {0,                         "NaN",               0,{0,0,0}},
     {0,                         "POSITIVE_INFINITY", 0,{0,0,0}},
     {0,                         "NEGATIVE_INFINITY", 0,{0,0,0}},
     {1.7976931348623157E+308,   "MAX_VALUE",         0,{0,0,0}},
@@ -926,25 +892,25 @@ InitRuntimeNumberState(JSRuntime *rt)
 {
     FIX_FPU();
 
-    jsdpun u;
-    u.s.hi = JSDOUBLE_HI32_NAN;
-    u.s.lo = JSDOUBLE_LO32_NAN;
-    number_constants[NC_NaN].dval = js_NaN = u.d;
-    rt->NaNValue.setDouble(u.d);
+    double d;
 
-    u.s.hi = JSDOUBLE_HI32_EXPMASK;
-    u.s.lo = 0x00000000;
-    number_constants[NC_POSITIVE_INFINITY].dval = js_PositiveInfinity = u.d;
-    rt->positiveInfinityValue.setDouble(u.d);
+    /*
+     * Our NaN must be one particular canonical value, because we rely on NaN
+     * encoding for our value representation.  See jsval.h.
+     */
+    d = MOZ_DOUBLE_SPECIFIC_NaN(0, 0x8000000000000ULL);
+    number_constants[NC_NaN].dval = js_NaN = d;
+    rt->NaNValue.setDouble(d);
 
-    u.s.hi = JSDOUBLE_HI32_SIGNBIT | JSDOUBLE_HI32_EXPMASK;
-    u.s.lo = 0x00000000;
-    number_constants[NC_NEGATIVE_INFINITY].dval = js_NegativeInfinity = u.d;
-    rt->negativeInfinityValue.setDouble(u.d);
+    d = MOZ_DOUBLE_POSITIVE_INFINITY();
+    number_constants[NC_POSITIVE_INFINITY].dval = js_PositiveInfinity = d;
+    rt->positiveInfinityValue.setDouble(d);
 
-    u.s.hi = 0;
-    u.s.lo = 1;
-    number_constants[NC_MIN_VALUE].dval = u.d;
+    d = MOZ_DOUBLE_NEGATIVE_INFINITY();
+    number_constants[NC_NEGATIVE_INFINITY].dval = js_NegativeInfinity = d;
+    rt->negativeInfinityValue.setDouble(d);
+
+    number_constants[NC_MIN_VALUE].dval = MOZ_DOUBLE_MIN_VALUE();
 
     /* Copy locale-specific separators into the runtime strings. */
     const char *thousandsSeparator, *decimalPoint, *grouping;
@@ -1013,15 +979,15 @@ js_InitNumberClass(JSContext *cx, JSObject *obj)
     /* XXX must do at least once per new thread, so do it per JSContext... */
     FIX_FPU();
 
-    GlobalObject *global = &obj->asGlobal();
+    Rooted<GlobalObject*> global(cx, &obj->asGlobal());
 
-    JSObject *numberProto = global->createBlankPrototype(cx, &NumberClass);
+    RootedObject numberProto(cx, global->createBlankPrototype(cx, &NumberClass));
     if (!numberProto)
         return NULL;
     numberProto->asNumber().setPrimitiveValue(0);
 
-    JSFunction *ctor = global->createConstructor(cx, Number, &NumberClass,
-                                                 CLASS_ATOM(cx, Number), 1);
+    RootedFunction ctor(cx);
+    ctor = global->createConstructor(cx, Number, CLASS_NAME(cx, Number), 1);
     if (!ctor)
         return NULL;
 
@@ -1039,10 +1005,10 @@ js_InitNumberClass(JSContext *cx, JSObject *obj)
         return NULL;
 
     /* ES5 15.1.1.1, 15.1.1.2 */
-    if (!DefineNativeProperty(cx, global, ATOM_TO_JSID(cx->runtime->atomState.NaNAtom),
+    if (!DefineNativeProperty(cx, global, cx->runtime->atomState.NaNAtom,
                               cx->runtime->NaNValue, JS_PropertyStub, JS_StrictPropertyStub,
                               JSPROP_PERMANENT | JSPROP_READONLY, 0, 0) ||
-        !DefineNativeProperty(cx, global, ATOM_TO_JSID(cx->runtime->atomState.InfinityAtom),
+        !DefineNativeProperty(cx, global, cx->runtime->atomState.InfinityAtom,
                               cx->runtime->positiveInfinityValue,
                               JS_PropertyStub, JS_StrictPropertyStub,
                               JSPROP_PERMANENT | JSPROP_READONLY, 0, 0))
@@ -1056,12 +1022,6 @@ js_InitNumberClass(JSContext *cx, JSObject *obj)
     return numberProto;
 }
 
-namespace v8 {
-namespace internal {
-extern char* DoubleToCString(double v, char* buffer, int buflen);
-}
-}
-
 namespace js {
 
 static char *
@@ -1070,7 +1030,7 @@ FracNumberToCString(JSContext *cx, ToCStringBuf *cbuf, double d, int base = 10)
 #ifdef DEBUG
     {
         int32_t _;
-        JS_ASSERT(!JSDOUBLE_IS_INT32(d, &_));
+        JS_ASSERT(!MOZ_DOUBLE_IS_INT32(d, &_));
     }
 #endif
 
@@ -1082,14 +1042,12 @@ FracNumberToCString(JSContext *cx, ToCStringBuf *cbuf, double d, int base = 10)
          *
          *   Printing floating-point numbers quickly and accurately with integers.
          *   Florian Loitsch, PLDI 2010.
-         *
-         * It fails on a small number of cases, whereupon we fall back to
-         * js_dtostr() (which uses David Gay's dtoa).
          */
-        numStr = v8::internal::DoubleToCString(d, cbuf->sbuf, cbuf->sbufSize);
-        if (!numStr)
-            numStr = js_dtostr(cx->runtime->dtoaState, cbuf->sbuf, cbuf->sbufSize,
-                               DTOSTR_STANDARD, 0, d);
+        const double_conversion::DoubleToStringConverter &converter
+            = double_conversion::DoubleToStringConverter::EcmaScriptConverter();
+        double_conversion::StringBuilder builder(cbuf->sbuf, cbuf->sbufSize);
+        converter.ToShortest(d, &builder);
+        numStr = builder.Finalize();
     } else {
         numStr = cbuf->dbuf = js_dtobasestr(cx->runtime->dtoaState, base, d);
     }
@@ -1100,7 +1058,7 @@ char *
 NumberToCString(JSContext *cx, ToCStringBuf *cbuf, double d, int base/* = 10*/)
 {
     int32_t i;
-    return (JSDOUBLE_IS_INT32(d, &i))
+    return MOZ_DOUBLE_IS_INT32(d, &i)
            ? IntToCString(cbuf, i, base)
            : FracNumberToCString(cx, cbuf, d, base);
 }
@@ -1124,7 +1082,7 @@ js_NumberToStringWithBase(JSContext *cx, double d, int base)
     JSCompartment *c = cx->compartment;
 
     int32_t i;
-    if (JSDOUBLE_IS_INT32(d, &i)) {
+    if (MOZ_DOUBLE_IS_INT32(d, &i)) {
         if (base == 10 && StaticStrings::hasInt(i))
             return cx->runtime->staticStrings.getInt(i);
         if (unsigned(i) < unsigned(base)) {
@@ -1228,9 +1186,28 @@ NumberValueToStringBuffer(JSContext *cx, const Value &v, StringBuffer &sb)
     return sb.appendInflated(cstr, cstrlen);
 }
 
-bool
+JS_PUBLIC_API(bool)
 ToNumberSlow(JSContext *cx, Value v, double *out)
 {
+#ifdef DEBUG
+    /*
+     * MSVC bizarrely miscompiles this, complaining about the first brace below
+     * being unmatched (!).  The error message points at both this opening brace
+     * and at the corresponding SkipRoot constructor.  The error seems to derive
+     * from the presence guard-object macros on the SkipRoot class/constructor,
+     * which seems well in the weeds for an unmatched-brace syntax error.
+     * Otherwise the problem is inscrutable, and I haven't found a workaround.
+     * So for now just disable it when compiling with MSVC -- not ideal, but at
+     * least Windows debug shell builds complete again.
+     */
+#ifndef _MSC_VER
+    {
+        SkipRoot skip(cx, &v);
+        MaybeCheckStackRoots(cx);
+    }
+#endif
+#endif
+
     JS_ASSERT(!v.isNumber());
     goto skip_int_double;
     for (;;) {
@@ -1267,7 +1244,7 @@ ToNumberSlow(JSContext *cx, Value v, double *out)
     return true;
 }
 
-bool
+JS_PUBLIC_API(bool)
 ToInt32Slow(JSContext *cx, const Value &v, int32_t *out)
 {
     JS_ASSERT(!v.isInt32());
@@ -1278,7 +1255,7 @@ ToInt32Slow(JSContext *cx, const Value &v, int32_t *out)
         if (!ToNumberSlow(cx, v, &d))
             return false;
     }
-    *out = js_DoubleToECMAInt32(d);
+    *out = ToInt32(d);
     return true;
 }
 
@@ -1293,31 +1270,7 @@ ToUint32Slow(JSContext *cx, const Value &v, uint32_t *out)
         if (!ToNumberSlow(cx, v, &d))
             return false;
     }
-    *out = js_DoubleToECMAUint32(d);
-    return true;
-}
-
-}  /* namespace js */
-
-namespace js {
-
-bool
-NonstandardToInt32Slow(JSContext *cx, const Value &v, int32_t *out)
-{
-    JS_ASSERT(!v.isInt32());
-    double d;
-    if (v.isDouble()) {
-        d = v.toDouble();
-    } else if (!ToNumberSlow(cx, v, &d)) {
-        return false;
-    }
-
-    if (JSDOUBLE_IS_NaN(d) || d <= -2147483649.0 || 2147483648.0 <= d) {
-        js_ReportValueError(cx, JSMSG_CANT_CONVERT,
-                            JSDVG_SEARCH_STACK, v, NULL);
-        return false;
-    }
-    *out = (int32_t) floor(d + 0.5);  /* Round to nearest */
+    *out = ToUint32(d);
     return true;
 }
 
@@ -1332,7 +1285,7 @@ ValueToUint16Slow(JSContext *cx, const Value &v, uint16_t *out)
         return false;
     }
 
-    if (d == 0 || !JSDOUBLE_IS_FINITE(d)) {
+    if (d == 0 || !MOZ_DOUBLE_IS_FINITE(d)) {
         *out = 0;
         return true;
     }
@@ -1388,7 +1341,7 @@ js_strtod(JSContext *cx, const jschar *s, const jschar *send,
     istr = cstr;
     if ((negative = (*istr == '-')) != 0 || *istr == '+')
         istr++;
-    if (*istr == 'I' && !strncmp(istr, js_Infinity_str, sizeof js_Infinity_str - 1)) {
+    if (*istr == 'I' && !strncmp(istr, "Infinity", 8)) {
         d = negative ? js_NegativeInfinity : js_PositiveInfinity;
         estr = istr + 8;
     } else {

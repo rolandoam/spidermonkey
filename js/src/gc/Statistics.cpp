@@ -1,41 +1,9 @@
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
  * vim: set ts=8 sw=4 et tw=78:
  *
- * ***** BEGIN LICENSE BLOCK *****
- * Version: MPL 1.1/GPL 2.0/LGPL 2.1
- *
- * The contents of this file are subject to the Mozilla Public License Version
- * 1.1 (the "License"); you may not use this file except in compliance with
- * the License. You may obtain a copy of the License at
- * http://www.mozilla.org/MPL/
- *
- * Software distributed under the License is distributed on an "AS IS" basis,
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
- * for the specific language governing rights and limitations under the
- * License.
- *
- * The Original Code is SpiderMonkey JavaScript engine.
- *
- * The Initial Developer of the Original Code is
- * the Mozilla Foundation.
- * Portions created by the Initial Developer are Copyright (C) 2011
- * the Initial Developer. All Rights Reserved.
- *
- * Contributor(s):
- *
- * Alternatively, the contents of this file may be used under the terms of
- * either of the GNU General Public License Version 2 or later (the "GPL"),
- * or the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
- * in which case the provisions of the GPL or the LGPL are applicable instead
- * of those above. If you wish to allow use of your version of this file only
- * under the terms of either the GPL or the LGPL, and not to allow others to
- * use your version of this file under the terms of the MPL, indicate your
- * decision by deleting the provisions above and replace them with the notice
- * and other provisions required by the GPL or the LGPL. If you do not delete
- * the provisions above, a recipient may use your version of this file under
- * the terms of any one of the MPL, the GPL or the LGPL.
- *
- * ***** END LICENSE BLOCK ***** */
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include <stdio.h>
 #include <stdarg.h>
@@ -49,10 +17,224 @@
 #include "jsutil.h"
 #include "prmjtime.h"
 
+#include "gc/Memory.h"
 #include "gc/Statistics.h"
+
+#include "gc/Barrier-inl.h"
 
 namespace js {
 namespace gcstats {
+
+/* Except for the first and last, slices of less than 12ms are not reported. */
+static const int64_t SLICE_MIN_REPORT_TIME = 12 * PRMJ_USEC_PER_MSEC;
+
+class StatisticsSerializer
+{
+    typedef Vector<char, 128, SystemAllocPolicy> CharBuffer;
+    CharBuffer buf_;
+    bool asJSON_;
+    bool needComma_;
+    bool oom_;
+
+    const static int MaxFieldValueLength = 128;
+
+  public:
+    enum Mode {
+        AsJSON = true,
+        AsText = false
+    };
+
+    StatisticsSerializer(Mode asJSON)
+      : buf_(), asJSON_(asJSON), needComma_(false), oom_(false)
+    {}
+
+    bool isJSON() { return asJSON_; }
+
+    bool isOOM() { return oom_; }
+
+    void endLine() {
+        if (!asJSON_) {
+            p("\n");
+            needComma_ = false;
+        }
+    }
+
+    void extra(const char *str) {
+        if (!asJSON_) {
+            needComma_ = false;
+            p(str);
+        }
+    }
+
+    void appendString(const char *name, const char *value) {
+        put(name, value, "", true);
+    }
+
+    void appendNumber(const char *name, const char *vfmt, const char *units, ...) {
+        va_list va;
+        va_start(va, units);
+        append(name, vfmt, va, units);
+        va_end(va);
+    }
+
+    void appendDecimal(const char *name, const char *units, double d) {
+        if (asJSON_)
+            appendNumber(name, "%d.%d", units, (int)d, (int)(d * 10.) % 10);
+        else
+            appendNumber(name, "%.1f", units, d);
+    }
+
+    void appendIfNonzeroMS(const char *name, double v) {
+        if (asJSON_ || v >= 0.1)
+            appendDecimal(name, "ms", v);
+    }
+
+    void beginObject(const char *name) {
+        if (needComma_)
+            pJSON(", ");
+        if (asJSON_ && name) {
+            putKey(name);
+            pJSON(": ");
+        }
+        pJSON("{");
+        needComma_ = false;
+    }
+
+    void endObject() {
+        needComma_ = false;
+        pJSON("}");
+        needComma_ = true;
+    }
+
+    void beginArray(const char *name) {
+        if (needComma_)
+            pJSON(", ");
+        if (asJSON_)
+            putKey(name);
+        pJSON(": [");
+        needComma_ = false;
+    }
+
+    void endArray() {
+        needComma_ = false;
+        pJSON("]");
+        needComma_ = true;
+    }
+
+    jschar *finishJSString() {
+        char *buf = finishCString();
+        if (!buf)
+            return NULL;
+
+        size_t nchars = strlen(buf);
+        jschar *out = (jschar *)js_malloc(sizeof(jschar) * (nchars + 1));
+        if (!out) {
+            oom_ = true;
+            js_free(buf);
+            return NULL;
+        }
+
+        size_t outlen = nchars;
+        bool ok = InflateStringToBuffer(NULL, buf, nchars, out, &outlen);
+        js_free(buf);
+        if (!ok) {
+            oom_ = true;
+            js_free(out);
+            return NULL;
+        }
+        out[nchars] = 0;
+
+        return out;
+    }
+
+    char *finishCString() {
+        if (oom_)
+            return NULL;
+
+        buf_.append('\0');
+
+        char *buf = buf_.extractRawBuffer();
+        if (!buf)
+            oom_ = true;
+
+        return buf;
+    }
+
+  private:
+    void append(const char *name, const char *vfmt,
+                va_list va, const char *units)
+    {
+        char val[MaxFieldValueLength];
+        JS_vsnprintf(val, MaxFieldValueLength, vfmt, va);
+        put(name, val, units, false);
+    }
+
+    void p(const char *cstr) {
+        if (oom_)
+            return;
+
+        if (!buf_.append(cstr, strlen(cstr)))
+            oom_ = true;
+    }
+
+    void p(const char c) {
+        if (oom_)
+            return;
+
+        if (!buf_.append(c))
+            oom_ = true;
+    }
+
+    void pJSON(const char *str) {
+        if (asJSON_)
+            p(str);
+    }
+
+    void put(const char *name, const char *val, const char *units, bool valueIsQuoted) {
+        if (needComma_)
+            p(", ");
+        needComma_ = true;
+
+        putKey(name);
+        p(": ");
+        if (valueIsQuoted)
+            putQuoted(val);
+        else
+            p(val);
+        if (!asJSON_)
+            p(units);
+    }
+
+    void putQuoted(const char *str) {
+        pJSON("\"");
+        p(str);
+        pJSON("\"");
+    }
+
+    void putKey(const char *str) {
+        if (!asJSON_) {
+            p(str);
+            return;
+        }
+
+        p("\"");
+        const char *c = str;
+        while (*c) {
+            if (*c == ' ' || *c == '\t')
+                p('_');
+            else if (isupper(*c))
+                p(tolower(*c));
+            else if (*c == '+')
+                p("added_");
+            else if (*c == '-')
+                p("removed_");
+            else if (*c != '(' && *c != ')')
+                p(*c);
+            c++;
+        }
+        p("\"");
+    }
+};
 
 static const char *
 ExplainReason(gcreason::Reason reason)
@@ -70,57 +252,67 @@ ExplainReason(gcreason::Reason reason)
     }
 }
 
-void
-Statistics::fmt(const char *f, ...)
+static double
+t(int64_t t)
 {
-    va_list va;
-    size_t off = strlen(buffer);
-
-    va_start(va, f);
-    JS_vsnprintf(buffer + off, BUFFER_SIZE - off, f, va);
-    va_end(va);
+    return double(t) / PRMJ_USEC_PER_MSEC;
 }
 
-void
-Statistics::fmtIfNonzero(const char *name, double t)
+struct PhaseInfo
 {
-    if (t) {
-        if (needComma)
-            fmt(", ");
-        fmt("%s: %.1f", name, t);
-        needComma = true;
-    }
+    unsigned index;
+    const char *name;
+};
+
+static PhaseInfo phases[] = {
+    { PHASE_GC_BEGIN, "Begin Callback" },
+    { PHASE_WAIT_BACKGROUND_THREAD, "Wait Background Thread" },
+    { PHASE_PURGE, "Purge" },
+    { PHASE_MARK, "Mark" },
+    { PHASE_MARK_ROOTS, "Mark Roots" },
+    { PHASE_MARK_TYPES, "Mark Types" },
+    { PHASE_MARK_DELAYED, "Mark Delayed" },
+    { PHASE_MARK_OTHER, "Mark Other" },
+    { PHASE_FINALIZE_START, "Finalize Start Callback" },
+    { PHASE_SWEEP, "Sweep" },
+    { PHASE_SWEEP_COMPARTMENTS, "Sweep Compartments" },
+    { PHASE_SWEEP_OBJECT, "Sweep Object" },
+    { PHASE_SWEEP_STRING, "Sweep String" },
+    { PHASE_SWEEP_SCRIPT, "Sweep Script" },
+    { PHASE_SWEEP_SHAPE, "Sweep Shape" },
+    { PHASE_DISCARD_CODE, "Discard Code" },
+    { PHASE_DISCARD_ANALYSIS, "Discard Analysis" },
+    { PHASE_DISCARD_TI, "Discard TI" },
+    { PHASE_SWEEP_TYPES, "Sweep Types" },
+    { PHASE_CLEAR_SCRIPT_ANALYSIS, "Clear Script Analysis" },
+    { PHASE_FINALIZE_END, "Finalize End Callback" },
+    { PHASE_DESTROY, "Deallocate" },
+    { PHASE_GC_END, "End Callback" },
+    { 0, NULL }
+};
+
+static void
+FormatPhaseTimes(StatisticsSerializer &ss, const char *name, int64_t *times)
+{
+    ss.beginObject(name);
+    for (unsigned i = 0; phases[i].name; i++)
+        ss.appendIfNonzeroMS(phases[i].name, t(times[phases[i].index]));
+    ss.endObject();
 }
 
-void
-Statistics::formatPhases(int64_t *times)
+static void
+FormatPhaseFaults(StatisticsSerializer &ss, const char *name, size_t *faults)
 {
-    needComma = false;
-    fmtIfNonzero("mark", t(times[PHASE_MARK]));
-    fmtIfNonzero("mark-roots", t(times[PHASE_MARK_ROOTS]));
-    fmtIfNonzero("mark-delayed", t(times[PHASE_MARK_DELAYED]));
-    fmtIfNonzero("mark-other", t(times[PHASE_MARK_OTHER]));
-    fmtIfNonzero("sweep", t(times[PHASE_SWEEP]));
-    fmtIfNonzero("sweep-obj", t(times[PHASE_SWEEP_OBJECT]));
-    fmtIfNonzero("sweep-string", t(times[PHASE_SWEEP_STRING]));
-    fmtIfNonzero("sweep-script", t(times[PHASE_SWEEP_SCRIPT]));
-    fmtIfNonzero("sweep-shape", t(times[PHASE_SWEEP_SHAPE]));
-    fmtIfNonzero("discard-code", t(times[PHASE_DISCARD_CODE]));
-    fmtIfNonzero("discard-analysis", t(times[PHASE_DISCARD_ANALYSIS]));
-    fmtIfNonzero("xpconnect", t(times[PHASE_XPCONNECT]));
-    fmtIfNonzero("deallocate", t(times[PHASE_DESTROY]));
+    ss.beginObject(name);
+    for (unsigned i = 0; phases[i].name; i++)
+        ss.appendNumber(phases[i].name, "%u", "", unsigned(faults[phases[i].index]));
+    ss.endObject();
 }
 
-/* Except for the first and last, slices of less than 12ms are not reported. */
-static const int64_t SLICE_MIN_REPORT_TIME = 12 * PRMJ_USEC_PER_MSEC;
-
-const char *
-Statistics::formatData()
+bool
+Statistics::formatData(StatisticsSerializer &ss, uint64_t timestamp)
 {
-    buffer[0] = 0x00;
-
     int64_t total = 0, longest = 0;
-
     for (SliceData *slice = slices.begin(); slice != slices.end(); slice++) {
         total += slice->duration();
         if (slice->duration() > longest)
@@ -130,47 +322,78 @@ Statistics::formatData()
     double mmu20 = computeMMU(20 * PRMJ_USEC_PER_MSEC);
     double mmu50 = computeMMU(50 * PRMJ_USEC_PER_MSEC);
 
-    fmt("TotalTime: %.1fms, Type: %s", t(total), compartment ? "compartment" : "global");
-    fmt(", MMU(20ms): %d%%, MMU(50ms): %d%%", int(mmu20 * 100), int(mmu50 * 100));
-
-    if (slices.length() > 1)
-        fmt(", MaxPause: %.1f", t(longest));
+    ss.beginObject(NULL);
+    if (ss.isJSON())
+        ss.appendNumber("Timestamp", "%llu", "", (unsigned long long)timestamp);
+    ss.appendDecimal("Total Time", "ms", t(total));
+    ss.appendNumber("Compartments Collected", "%d", "", collectedCount);
+    ss.appendNumber("Total Compartments", "%d", "", compartmentCount);
+    ss.appendNumber("MMU (20ms)", "%d", "%", int(mmu20 * 100));
+    ss.appendNumber("MMU (50ms)", "%d", "%", int(mmu50 * 100));
+    if (slices.length() > 1 || ss.isJSON())
+        ss.appendDecimal("Max Pause", "ms", t(longest));
     else
-        fmt(", Reason: %s", ExplainReason(slices[0].reason));
+        ss.appendString("Reason", ExplainReason(slices[0].reason));
+    if (nonincrementalReason || ss.isJSON()) {
+        ss.appendString("Nonincremental Reason",
+                        nonincrementalReason ? nonincrementalReason : "none");
+    }
+    ss.appendNumber("Allocated", "%u", "MB", unsigned(preBytes / 1024 / 1024));
+    ss.appendNumber("+Chunks", "%d", "", counts[STAT_NEW_CHUNK]);
+    ss.appendNumber("-Chunks", "%d", "", counts[STAT_DESTROY_CHUNK]);
+    ss.endLine();
 
-    if (nonincrementalReason)
-        fmt(", NonIncrementalReason: %s", nonincrementalReason);
-
-    fmt(", +chunks: %d, -chunks: %d\n", counts[STAT_NEW_CHUNK], counts[STAT_DESTROY_CHUNK]);
-
-    if (slices.length() > 1) {
+    if (slices.length() > 1 || ss.isJSON()) {
+        ss.beginArray("Slices");
         for (size_t i = 0; i < slices.length(); i++) {
             int64_t width = slices[i].duration();
             if (i != 0 && i != slices.length() - 1 && width < SLICE_MIN_REPORT_TIME &&
-                !slices[i].resetReason)
+                !slices[i].resetReason && !ss.isJSON())
             {
                 continue;
             }
 
-            fmt("    Slice %d @ %.1fms (Pause: %.1f, Reason: %s",
-                i,
-                t(slices[i].end - slices[0].start),
-                t(width),
-                ExplainReason(slices[i].reason));
+            ss.beginObject(NULL);
+            ss.extra("    ");
+            ss.appendNumber("Slice", "%d", "", i);
+            ss.appendDecimal("Pause", "", t(width));
+            ss.extra(" (");
+            ss.appendDecimal("When", "ms", t(slices[i].end - slices[0].start));
+            ss.appendString("Reason", ExplainReason(slices[i].reason));
             if (slices[i].resetReason)
-                fmt(", Reset: %s", slices[i].resetReason);
-            fmt("): ");
-            formatPhases(slices[i].phaseTimes);
-            fmt("\n");
+                ss.appendString("Reset", slices[i].resetReason);
+            ss.extra("): ");
+            FormatPhaseTimes(ss, "Times", slices[i].phaseTimes);
+            if (ss.isJSON())
+                FormatPhaseFaults(ss, "Page Faults", slices[i].phaseFaults);
+            ss.endLine();
+            ss.endObject();
         }
-
-        fmt("    Totals: ");
+        ss.endArray();
     }
+    ss.extra("    Totals: ");
+    FormatPhaseTimes(ss, "Totals", phaseTimes);
+    if (ss.isJSON())
+        FormatPhaseFaults(ss, "Total Page Faults", phaseFaults);
+    ss.endObject();
 
-    formatPhases(phaseTimes);
-    fmt("\n");
+    return !ss.isOOM();
+}
 
-    return buffer;
+jschar *
+Statistics::formatMessage()
+{
+    StatisticsSerializer ss(StatisticsSerializer::AsText);
+    formatData(ss, 0);
+    return ss.finishJSString();
+}
+
+jschar *
+Statistics::formatJSON(uint64_t timestamp)
+{
+    StatisticsSerializer ss(StatisticsSerializer::AsJSON);
+    formatData(ss, timestamp);
+    return ss.finishJSString();
 }
 
 Statistics::Statistics(JSRuntime *rt)
@@ -178,9 +401,10 @@ Statistics::Statistics(JSRuntime *rt)
     startupTime(PRMJ_Now()),
     fp(NULL),
     fullFormat(false),
-    compartment(NULL),
-    nonincrementalReason(NULL),
-    needComma(false)
+    gcDepth(0),
+    collectedCount(0),
+    compartmentCount(0),
+    nonincrementalReason(NULL)
 {
     PodArrayZero(phaseTotals);
     PodArrayZero(counts);
@@ -209,20 +433,18 @@ Statistics::~Statistics()
 {
     if (fp) {
         if (fullFormat) {
-            buffer[0] = 0x00;
-            formatPhases(phaseTotals);
-            fprintf(fp, "TOTALS\n%s\n\n-------\n", buffer);
+            StatisticsSerializer ss(StatisticsSerializer::AsText);
+            FormatPhaseTimes(ss, "", phaseTotals);
+            char *msg = ss.finishCString();
+            if (msg) {
+                fprintf(fp, "TOTALS\n%s\n\n-------\n", msg);
+                js_free(msg);
+            }
         }
 
         if (fp != stdout && fp != stderr)
             fclose(fp);
     }
-}
-
-double
-Statistics::t(int64_t t)
-{
-    return double(t) / PRMJ_USEC_PER_MSEC;
 }
 
 int64_t
@@ -235,9 +457,13 @@ void
 Statistics::printStats()
 {
     if (fullFormat) {
-        fprintf(fp, "GC(T+%.3fs) %s\n",
-                t(slices[0].start - startupTime) / 1000.0,
-                formatData());
+        StatisticsSerializer ss(StatisticsSerializer::AsText);
+        formatData(ss, 0);
+        char *msg = ss.finishCString();
+        if (msg) {
+            fprintf(fp, "GC(T+%.3fs) %s\n", t(slices[0].start - startupTime) / 1000.0, msg);
+            js_free(msg);
+        }
     } else {
         fprintf(fp, "%f %f %f\n",
                 t(gcDuration()),
@@ -250,11 +476,15 @@ Statistics::printStats()
 void
 Statistics::beginGC()
 {
-    PodArrayZero(phaseStarts);
+    PodArrayZero(phaseStartTimes);
+    PodArrayZero(phaseStartFaults);
     PodArrayZero(phaseTimes);
+    PodArrayZero(phaseFaults);
 
     slices.clearAndFree();
     nonincrementalReason = NULL;
+
+    preBytes = runtime->gcBytes;
 
     Probes::GCStart();
 }
@@ -269,7 +499,7 @@ Statistics::endGC()
         phaseTotals[i] += phaseTimes[i];
 
     if (JSAccumulateTelemetryDataCallback cb = runtime->telemetryCallback) {
-        (*cb)(JS_TELEMETRY_GC_IS_COMPARTMENTAL, compartment ? 1 : 0);
+        (*cb)(JS_TELEMETRY_GC_IS_COMPARTMENTAL, collectedCount == compartmentCount ? 0 : 1);
         (*cb)(JS_TELEMETRY_GC_MS, t(gcDuration()));
         (*cb)(JS_TELEMETRY_GC_MARK_MS, t(phaseTimes[PHASE_MARK]));
         (*cb)(JS_TELEMETRY_GC_SWEEP_MS, t(phaseTimes[PHASE_SWEEP]));
@@ -282,14 +512,13 @@ Statistics::endGC()
 
     if (fp)
         printStats();
-
-    PodArrayZero(counts);
 }
 
 void
-Statistics::beginSlice(JSCompartment *comp, gcreason::Reason reason)
+Statistics::beginSlice(int collectedCount, int compartmentCount, gcreason::Reason reason)
 {
-    compartment = comp;
+    this->collectedCount = collectedCount;
+    this->compartmentCount = compartmentCount;
 
     bool first = runtime->gcIncrementalState == gc::NO_INCREMENTAL;
     if (first)
@@ -301,9 +530,11 @@ Statistics::beginSlice(JSCompartment *comp, gcreason::Reason reason)
     if (JSAccumulateTelemetryDataCallback cb = runtime->telemetryCallback)
         (*cb)(JS_TELEMETRY_GC_REASON, reason);
 
-    if (GCSliceCallback cb = runtime->gcSliceCallback) {
-        GCDescription desc(NULL, !!compartment);
-        (*cb)(runtime, first ? GC_CYCLE_BEGIN : GC_SLICE_BEGIN, desc);
+    // Slice callbacks should only fire for the outermost level
+    if (++gcDepth == 1) {
+        bool wasFullGC = collectedCount == compartmentCount;
+        if (GCSliceCallback cb = runtime->gcSliceCallback)
+            (*cb)(runtime, first ? GC_CYCLE_BEGIN : GC_SLICE_BEGIN, GCDescription(!wasFullGC));
     }
 }
 
@@ -321,18 +552,26 @@ Statistics::endSlice()
     if (last)
         endGC();
 
-    if (GCSliceCallback cb = runtime->gcSliceCallback) {
-        if (last)
-            (*cb)(runtime, GC_CYCLE_END, GCDescription(formatData(), !!compartment));
-        else
-            (*cb)(runtime, GC_SLICE_END, GCDescription(NULL, !!compartment));
+    // Slice callbacks should only fire for the outermost level
+    if (--gcDepth == 0) {
+        bool wasFullGC = collectedCount == compartmentCount;
+        if (GCSliceCallback cb = runtime->gcSliceCallback)
+            (*cb)(runtime, last ? GC_CYCLE_END : GC_SLICE_END, GCDescription(!wasFullGC));
     }
+
+    /* Do this after the slice callback since it uses these values. */
+    if (last)
+        PodArrayZero(counts);
 }
 
 void
 Statistics::beginPhase(Phase phase)
 {
-    phaseStarts[phase] = PRMJ_Now();
+    /* Guard against re-entry */
+    JS_ASSERT(!phaseStartTimes[phase]);
+
+    phaseStartTimes[phase] = PRMJ_Now();
+    phaseStartFaults[phase] = gc::GetPageFaultCount();
 
     if (phase == gcstats::PHASE_MARK)
         Probes::GCStartMarkPhase();
@@ -343,10 +582,14 @@ Statistics::beginPhase(Phase phase)
 void
 Statistics::endPhase(Phase phase)
 {
-    int64_t now = PRMJ_Now();
-    int64_t t = now - phaseStarts[phase];
+    int64_t t = PRMJ_Now() - phaseStartTimes[phase];
     slices.back().phaseTimes[phase] += t;
     phaseTimes[phase] += t;
+    phaseStartTimes[phase] = 0;
+
+    size_t faults = gc::GetPageFaultCount() - phaseStartFaults[phase];
+    slices.back().phaseFaults[phase] += faults;
+    phaseFaults[phase] += faults;
 
     if (phase == gcstats::PHASE_MARK)
         Probes::GCEndMarkPhase();

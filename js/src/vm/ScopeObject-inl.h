@@ -1,42 +1,9 @@
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
  * vim: set ts=8 sw=4 et tw=78:
  *
- * ***** BEGIN LICENSE BLOCK *****
- * Version: MPL 1.1/GPL 2.0/LGPL 2.1
- *
- * The contents of this file are subject to the Mozilla Public License Version
- * 1.1 (the "License"); you may not use this file except in compliance with
- * the License. You may obtain a copy of the License at
- * http://www.mozilla.org/MPL/
- *
- * Software distributed under the License is distributed on an "AS IS" basis,
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
- * for the specific language governing rights and limitations under the
- * License.
- *
- * The Original Code is SpiderMonkey call object code.
- *
- * The Initial Developer of the Original Code is
- * the Mozilla Foundation.
- * Portions created by the Initial Developer are Copyright (C) 2011
- * the Initial Developer. All Rights Reserved.
- *
- * Contributor(s):
- *   Paul Biggar <pbiggar@mozilla.com> (original author)
- *
- * Alternatively, the contents of this file may be used under the terms of
- * either of the GNU General Public License Version 2 or later (the "GPL"),
- * or the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
- * in which case the provisions of the GPL or the LGPL are applicable instead
- * of those above. If you wish to allow use of your version of this file only
- * under the terms of either the GPL or the LGPL, and not to allow others to
- * use your version of this file under the terms of the MPL, indicate your
- * decision by deleting the provisions above and replace them with the notice
- * and other provisions required by the GPL or the LGPL. If you do not delete
- * the provisions above, a recipient may use your version of this file under
- * the terms of any one of the MPL, the GPL or the LGPL.
- *
- * ***** END LICENSE BLOCK ***** */
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #ifndef ScopeObject_inl_h___
 #define ScopeObject_inl_h___
@@ -45,6 +12,20 @@
 
 namespace js {
 
+inline
+ScopeCoordinate::ScopeCoordinate(jsbytecode *pc)
+  : hops(GET_UINT16(pc)), binding(GET_UINT16(pc + 2))
+{
+    JS_ASSERT(JOF_OPTYPE(*pc) == JOF_SCOPECOORD);
+}
+
+inline JSAtom *
+ScopeCoordinateAtom(JSScript *script, jsbytecode *pc)
+{
+    JS_ASSERT(JOF_OPTYPE(*pc) == JOF_SCOPECOORD);
+    return script->getAtom(GET_UINT32_INDEX(pc + 2 * sizeof(uint16_t)));
+}
+
 inline JSObject &
 ScopeObject::enclosingScope() const
 {
@@ -52,18 +33,19 @@ ScopeObject::enclosingScope() const
 }
 
 inline bool
-ScopeObject::setEnclosingScope(JSContext *cx, JSObject &obj)
+ScopeObject::setEnclosingScope(JSContext *cx, HandleObject obj)
 {
-    if (!obj.setDelegate(cx))
+    RootedObject self(cx, this);
+    if (!obj->setDelegate(cx))
         return false;
-    setFixedSlot(SCOPE_CHAIN_SLOT, ObjectValue(obj));
+    self->setFixedSlot(SCOPE_CHAIN_SLOT, ObjectValue(*obj));
     return true;
 }
 
 inline StackFrame *
 ScopeObject::maybeStackFrame() const
 {
-    JS_ASSERT(!isStaticBlock());
+    JS_ASSERT(!isStaticBlock() && !isWith());
     return reinterpret_cast<StackFrame *>(JSObject::getPrivate());
 }
 
@@ -108,20 +90,6 @@ CallObject::getCalleeFunction() const
 }
 
 inline const Value &
-CallObject::arguments() const
-{
-    JS_ASSERT(!isForEval());
-    return getReservedSlot(ARGUMENTS_SLOT);
-}
-
-inline void
-CallObject::setArguments(const Value &v)
-{
-    JS_ASSERT(!isForEval());
-    setFixedSlot(ARGUMENTS_SLOT, v);
-}
-
-inline const Value &
 CallObject::arg(unsigned i) const
 {
     JS_ASSERT(i < getCalleeFunction()->nargs);
@@ -146,8 +114,8 @@ inline const Value &
 CallObject::var(unsigned i) const
 {
     JSFunction *fun = getCalleeFunction();
-    JS_ASSERT(fun->nargs == fun->script()->bindings.countArgs());
-    JS_ASSERT(i < fun->script()->bindings.countVars());
+    JS_ASSERT(fun->nargs == fun->script()->bindings.numArgs());
+    JS_ASSERT(i < fun->script()->bindings.numVars());
     return getSlot(RESERVED_SLOTS + fun->nargs + i);
 }
 
@@ -155,8 +123,8 @@ inline void
 CallObject::setVar(unsigned i, const Value &v)
 {
     JSFunction *fun = getCalleeFunction();
-    JS_ASSERT(fun->nargs == fun->script()->bindings.countArgs());
-    JS_ASSERT(i < fun->script()->bindings.countVars());
+    JS_ASSERT(fun->nargs == fun->script()->bindings.numArgs());
+    JS_ASSERT(i < fun->script()->bindings.numVars());
     setSlot(RESERVED_SLOTS + fun->nargs + i, v);
 }
 
@@ -164,8 +132,8 @@ inline void
 CallObject::initVarUnchecked(unsigned i, const Value &v)
 {
     JSFunction *fun = getCalleeFunction();
-    JS_ASSERT(fun->nargs == fun->script()->bindings.countArgs());
-    JS_ASSERT(i < fun->script()->bindings.countVars());
+    JS_ASSERT(fun->nargs == fun->script()->bindings.numArgs());
+    JS_ASSERT(i < fun->script()->bindings.numVars());
     initSlotUnchecked(RESERVED_SLOTS + fun->nargs + i, v);
 }
 
@@ -190,7 +158,7 @@ CallObject::varArray()
 {
     JSFunction *fun = getCalleeFunction();
     JS_ASSERT(hasContiguousSlots(RESERVED_SLOTS + fun->nargs,
-                                 fun->script()->bindings.countVars()));
+                                 fun->script()->bindings.numVars()));
     return HeapSlotArray(getSlotAddress(RESERVED_SLOTS + fun->nargs));
 }
 
@@ -221,6 +189,7 @@ BlockObject::slotCount() const
 inline HeapSlot &
 BlockObject::slotValue(unsigned i)
 {
+    JS_ASSERT(i < slotCount());
     return getSlotRef(RESERVED_SLOTS + i);
 }
 
@@ -259,9 +228,29 @@ StaticBlockObject::maybeDefinitionParseNode(unsigned i)
 }
 
 inline void
-StaticBlockObject::poisonDefinitionParseNode(unsigned i)
+StaticBlockObject::setAliased(unsigned i, bool aliased)
 {
-    slotValue(i).init(this, i, PrivateValue(NULL));
+    slotValue(i).init(this, i, BooleanValue(aliased));
+    if (aliased)
+        JSObject::setPrivate(reinterpret_cast<void *>(1));
+}
+
+inline bool
+StaticBlockObject::isAliased(unsigned i)
+{
+    return slotValue(i).isTrue();
+}
+
+inline bool
+StaticBlockObject::needsClone() const
+{
+    return JSObject::getPrivate() != NULL;
+}
+
+inline bool
+StaticBlockObject::containsVarAtDepth(uint32_t depth)
+{
+    return depth >= stackDepth() && depth < stackDepth() + slotCount();
 }
 
 inline StaticBlockObject &
@@ -333,6 +322,13 @@ JSObject::asClonedBlock()
 {
     JS_ASSERT(isClonedBlock());
     return *static_cast<js::ClonedBlockObject *>(this);
+}
+
+inline js::DebugScopeObject &
+JSObject::asDebugScope()
+{
+    JS_ASSERT(isDebugScope());
+    return *static_cast<js::DebugScopeObject *>(this);
 }
 
 #endif /* CallObject_inl_h___ */

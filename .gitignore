@@ -32,7 +32,6 @@ chrome/
 client.mk/
 client.py/
 config/
-configure.in/
 content/
 db/
 dbm/

@@ -16,8 +16,759 @@
 #include "jsval.h"
 
 #include "gc/Barrier.h"
+#include "vm/NumericConversions.h"
 
 namespace js {
+
+class Debugger;
+class ObjectImpl;
+
+class AutoPropDescArrayRooter;
+
+static inline PropertyOp
+CastAsPropertyOp(JSObject *object)
+{
+    return JS_DATA_TO_FUNC_PTR(PropertyOp, object);
+}
+
+static inline StrictPropertyOp
+CastAsStrictPropertyOp(JSObject *object)
+{
+    return JS_DATA_TO_FUNC_PTR(StrictPropertyOp, object);
+}
+
+/*
+ * A representation of ECMA-262 ed. 5's internal Property Descriptor data
+ * structure.
+ */
+struct PropDesc {
+  private:
+    /*
+     * Original object from which this descriptor derives, passed through for
+     * the benefit of proxies.  FIXME: Remove this when direct proxies happen.
+     */
+    Value pd_;
+
+    Value value_, get_, set_;
+
+    /* Property descriptor boolean fields. */
+    uint8_t attrs;
+
+    /* Bits indicating which values are set. */
+    bool hasGet_ : 1;
+    bool hasSet_ : 1;
+    bool hasValue_ : 1;
+    bool hasWritable_ : 1;
+    bool hasEnumerable_ : 1;
+    bool hasConfigurable_ : 1;
+
+    /* Or maybe this represents a property's absence, and it's undefined. */
+    bool isUndefined_ : 1;
+
+    PropDesc(const Value &v)
+      : pd_(UndefinedValue()),
+        value_(v),
+        get_(UndefinedValue()), set_(UndefinedValue()),
+        attrs(0),
+        hasGet_(false), hasSet_(false),
+        hasValue_(true), hasWritable_(false), hasEnumerable_(false), hasConfigurable_(false),
+        isUndefined_(false)
+    {
+    }
+
+  public:
+    friend class AutoPropDescArrayRooter;
+    friend void JS::AutoGCRooter::trace(JSTracer *trc);
+
+    enum Enumerability { Enumerable = true, NonEnumerable = false };
+    enum Configurability { Configurable = true, NonConfigurable = false };
+    enum Writability { Writable = true, NonWritable = false };
+
+    PropDesc();
+
+    static PropDesc undefined() { return PropDesc(); }
+    static PropDesc valueOnly(const Value &v) { return PropDesc(v); }
+
+    PropDesc(const Value &v, Writability writable,
+             Enumerability enumerable, Configurability configurable)
+      : pd_(UndefinedValue()),
+        value_(v),
+        get_(UndefinedValue()), set_(UndefinedValue()),
+        attrs((writable ? 0 : JSPROP_READONLY) |
+              (enumerable ? JSPROP_ENUMERATE : 0) |
+              (configurable ? 0 : JSPROP_PERMANENT)),
+        hasGet_(false), hasSet_(false),
+        hasValue_(true), hasWritable_(true), hasEnumerable_(true), hasConfigurable_(true),
+        isUndefined_(false)
+    {}
+
+    /*
+     * 8.10.5 ToPropertyDescriptor(Obj)
+     *
+     * If checkAccessors is false, skip steps 7.b and 8.b, which throw a
+     * TypeError if .get or .set is neither a callable object nor undefined.
+     *
+     * (DebuggerObject_defineProperty uses this: the .get and .set properties
+     * are expected to be Debugger.Object wrappers of functions, which are not
+     * themselves callable.)
+     */
+    bool initialize(JSContext* cx, const Value &v, bool checkAccessors = true);
+
+    /*
+     * 8.10.4 FromPropertyDescriptor(Desc)
+     *
+     * initFromPropertyDescriptor sets pd to undefined and populates all the
+     * other fields of this PropDesc from desc.
+     *
+     * makeObject populates pd based on the other fields of *this, creating a
+     * new property descriptor JSObject and defining properties on it.
+     */
+    void initFromPropertyDescriptor(const PropertyDescriptor &desc);
+    bool makeObject(JSContext *cx);
+
+    void setUndefined() { isUndefined_ = true; }
+
+    bool isUndefined() const { return isUndefined_; }
+
+    bool hasGet() const { MOZ_ASSERT(!isUndefined()); return hasGet_; }
+    bool hasSet() const { MOZ_ASSERT(!isUndefined()); return hasSet_; }
+    bool hasValue() const { MOZ_ASSERT(!isUndefined()); return hasValue_; }
+    bool hasWritable() const { MOZ_ASSERT(!isUndefined()); return hasWritable_; }
+    bool hasEnumerable() const { MOZ_ASSERT(!isUndefined()); return hasEnumerable_; }
+    bool hasConfigurable() const { MOZ_ASSERT(!isUndefined()); return hasConfigurable_; }
+
+    Value pd() const { MOZ_ASSERT(!isUndefined()); return pd_; }
+    void clearPd() { pd_ = UndefinedValue(); }
+
+    uint8_t attributes() const { MOZ_ASSERT(!isUndefined()); return attrs; }
+
+    /* 8.10.1 IsAccessorDescriptor(desc) */
+    bool isAccessorDescriptor() const {
+        return !isUndefined() && (hasGet() || hasSet());
+    }
+
+    /* 8.10.2 IsDataDescriptor(desc) */
+    bool isDataDescriptor() const {
+        return !isUndefined() && (hasValue() || hasWritable());
+    }
+
+    /* 8.10.3 IsGenericDescriptor(desc) */
+    bool isGenericDescriptor() const {
+        return !isUndefined() && !isAccessorDescriptor() && !isDataDescriptor();
+    }
+
+    bool configurable() const {
+        MOZ_ASSERT(!isUndefined());
+        MOZ_ASSERT(hasConfigurable());
+        return (attrs & JSPROP_PERMANENT) == 0;
+    }
+
+    bool enumerable() const {
+        MOZ_ASSERT(!isUndefined());
+        MOZ_ASSERT(hasEnumerable());
+        return (attrs & JSPROP_ENUMERATE) != 0;
+    }
+
+    bool writable() const {
+        MOZ_ASSERT(!isUndefined());
+        MOZ_ASSERT(hasWritable());
+        return (attrs & JSPROP_READONLY) == 0;
+    }
+
+    const Value & value() const {
+        MOZ_ASSERT(hasValue());
+        return value_;
+    }
+
+    JSObject * getterObject() const {
+        MOZ_ASSERT(!isUndefined());
+        MOZ_ASSERT(hasGet());
+        return get_.isUndefined() ? NULL : &get_.toObject();
+    }
+    JSObject * setterObject() const {
+        MOZ_ASSERT(!isUndefined());
+        MOZ_ASSERT(hasSet());
+        return set_.isUndefined() ? NULL : &set_.toObject();
+    }
+
+    const Value & getterValue() const {
+        MOZ_ASSERT(!isUndefined());
+        MOZ_ASSERT(hasGet());
+        return get_;
+    }
+    const Value & setterValue() const {
+        MOZ_ASSERT(!isUndefined());
+        MOZ_ASSERT(hasSet());
+        return set_;
+    }
+
+    /*
+     * Unfortunately the values produced by these methods are used such that
+     * we can't assert anything here.  :-(
+     */
+    PropertyOp getter() const {
+        return CastAsPropertyOp(get_.isUndefined() ? NULL : &get_.toObject());
+    }
+    StrictPropertyOp setter() const {
+        return CastAsStrictPropertyOp(set_.isUndefined() ? NULL : &set_.toObject());
+    }
+
+    /*
+     * Throw a TypeError if a getter/setter is present and is neither callable
+     * nor undefined. These methods do exactly the type checks that are skipped
+     * by passing false as the checkAccessors parameter of initialize.
+     */
+    bool checkGetter(JSContext *cx);
+    bool checkSetter(JSContext *cx);
+
+    bool unwrapDebuggerObjectsInto(JSContext *cx, Debugger *dbg, JSObject *obj,
+                                   PropDesc *unwrapped) const;
+
+    bool wrapInto(JSContext *cx, JSObject *obj, const jsid &id, jsid *wrappedId,
+                  PropDesc *wrappedDesc) const;
+
+    class AutoRooter : private AutoGCRooter
+    {
+      public:
+        explicit AutoRooter(JSContext *cx, PropDesc *pd_
+                            JS_GUARD_OBJECT_NOTIFIER_PARAM)
+          : AutoGCRooter(cx, PROPDESC), pd(pd_), skip(cx, pd_)
+        {
+            JS_GUARD_OBJECT_NOTIFIER_INIT;
+        }
+
+        friend void AutoGCRooter::trace(JSTracer *trc);
+
+      private:
+        PropDesc *pd;
+        SkipRoot skip;
+        JS_DECL_USE_GUARD_OBJECT_NOTIFIER
+     };
+};
+
+class DenseElementsHeader;
+class SparseElementsHeader;
+class Uint8ElementsHeader;
+class Int8ElementsHeader;
+class Uint16ElementsHeader;
+class Int16ElementsHeader;
+class Uint32ElementsHeader;
+class Int32ElementsHeader;
+class Uint8ClampedElementsHeader;
+class Float32ElementsHeader;
+class Float64ElementsHeader;
+class Uint8ClampedElementsHeader;
+class ArrayBufferElementsHeader;
+
+enum ElementsKind {
+    DenseElements,
+    SparseElements,
+
+    ArrayBufferElements,
+
+    /* These typed element types must remain contiguous. */
+    Uint8Elements,
+    Int8Elements,
+    Uint16Elements,
+    Int16Elements,
+    Uint32Elements,
+    Int32Elements,
+    Uint8ClampedElements,
+    Float32Elements,
+    Float64Elements
+};
+
+class ElementsHeader
+{
+  protected:
+    uint32_t type;
+    uint32_t length; /* Array length, ArrayBuffer length, typed array length */
+
+    union {
+        class {
+            friend class DenseElementsHeader;
+            uint32_t initializedLength;
+            uint32_t capacity;
+        } dense;
+        class {
+            friend class SparseElementsHeader;
+            Shape * shape;
+        } sparse;
+    };
+
+    void staticAsserts() {
+        MOZ_STATIC_ASSERT(sizeof(ElementsHeader) == ValuesPerHeader * sizeof(Value),
+                          "Elements size and values-per-Elements mismatch");
+    }
+
+  public:
+    ElementsKind kind() const {
+        MOZ_ASSERT(type <= ArrayBufferElements);
+        return ElementsKind(type);
+    }
+
+    inline bool isDenseElements() const { return kind() == DenseElements; }
+    inline bool isSparseElements() const { return kind() == SparseElements; }
+    inline bool isArrayBufferElements() const { return kind() == ArrayBufferElements; }
+    inline bool isUint8Elements() const { return kind() == Uint8Elements; }
+    inline bool isInt8Elements() const { return kind() == Int8Elements; }
+    inline bool isUint16Elements() const { return kind() == Uint16Elements; }
+    inline bool isInt16Elements() const { return kind() == Int16Elements; }
+    inline bool isUint32Elements() const { return kind() == Uint32Elements; }
+    inline bool isInt32Elements() const { return kind() == Int32Elements; }
+    inline bool isUint8ClampedElements() const { return kind() == Uint8ClampedElements; }
+    inline bool isFloat32Elements() const { return kind() == Float32Elements; }
+    inline bool isFloat64Elements() const { return kind() == Float64Elements; }
+
+    inline DenseElementsHeader & asDenseElements();
+    inline SparseElementsHeader & asSparseElements();
+    inline ArrayBufferElementsHeader & asArrayBufferElements();
+    inline Uint8ElementsHeader & asUint8Elements();
+    inline Int8ElementsHeader & asInt8Elements();
+    inline Uint16ElementsHeader & asUint16Elements();
+    inline Int16ElementsHeader & asInt16Elements();
+    inline Uint32ElementsHeader & asUint32Elements();
+    inline Int32ElementsHeader & asInt32Elements();
+    inline Uint8ClampedElementsHeader & asUint8ClampedElements();
+    inline Float32ElementsHeader & asFloat32Elements();
+    inline Float64ElementsHeader & asFloat64Elements();
+
+    static ElementsHeader * fromElements(HeapSlot *elems) {
+        return reinterpret_cast<ElementsHeader *>(uintptr_t(elems) - sizeof(ElementsHeader));
+    }
+
+    static const size_t ValuesPerHeader = 2;
+};
+
+class DenseElementsHeader : public ElementsHeader
+{
+  public:
+    uint32_t capacity() const {
+        MOZ_ASSERT(ElementsHeader::isDenseElements());
+        return dense.capacity;
+    }
+
+    uint32_t initializedLength() const {
+        MOZ_ASSERT(ElementsHeader::isDenseElements());
+        return dense.initializedLength;
+    }
+
+    uint32_t length() const {
+        MOZ_ASSERT(ElementsHeader::isDenseElements());
+        return ElementsHeader::length;
+    }
+
+    bool getOwnElement(JSContext *cx, ObjectImpl *obj, uint32_t index, PropDesc *desc);
+
+    bool defineElement(JSContext *cx, ObjectImpl *obj, uint32_t index, const PropDesc &desc,
+                       bool shouldThrow, bool *succeeded);
+
+    bool setElement(JSContext *cx, ObjectImpl *obj, ObjectImpl *receiver, uint32_t index,
+                    const Value &v, bool *succeeded);
+
+  private:
+    inline bool isDenseElements() const MOZ_DELETE;
+    inline DenseElementsHeader & asDenseElements() MOZ_DELETE;
+
+    DenseElementsHeader(const DenseElementsHeader &other) MOZ_DELETE;
+    void operator=(const DenseElementsHeader &other) MOZ_DELETE;
+};
+
+class SparseElementsHeader : public ElementsHeader
+{
+  public:
+    Shape * shape() {
+        MOZ_ASSERT(ElementsHeader::isSparseElements());
+        return sparse.shape;
+    }
+
+    uint32_t length() const {
+        MOZ_ASSERT(ElementsHeader::isSparseElements());
+        return ElementsHeader::length;
+    }
+
+    bool getOwnElement(JSContext *cx, ObjectImpl *obj, uint32_t index, PropDesc *desc);
+
+    bool defineElement(JSContext *cx, ObjectImpl *obj, uint32_t index, const PropDesc &desc,
+                       bool shouldThrow, bool *succeeded);
+
+    bool setElement(JSContext *cx, ObjectImpl *obj, ObjectImpl *receiver, uint32_t index,
+                    const Value &v, bool *succeeded);
+
+  private:
+    inline bool isSparseElements() const MOZ_DELETE;
+    inline SparseElementsHeader & asSparseElements() MOZ_DELETE;
+
+    SparseElementsHeader(const SparseElementsHeader &other) MOZ_DELETE;
+    void operator=(const SparseElementsHeader &other) MOZ_DELETE;
+};
+
+extern uint32_t JS_FASTCALL
+ClampDoubleToUint8(const double x);
+
+struct uint8_clamped {
+    uint8_t val;
+
+    uint8_clamped() { }
+    uint8_clamped(const uint8_clamped& other) : val(other.val) { }
+
+    // invoke our assignment helpers for constructor conversion
+    uint8_clamped(uint8_t x)    { *this = x; }
+    uint8_clamped(uint16_t x)   { *this = x; }
+    uint8_clamped(uint32_t x)   { *this = x; }
+    uint8_clamped(int8_t x)     { *this = x; }
+    uint8_clamped(int16_t x)    { *this = x; }
+    uint8_clamped(int32_t x)    { *this = x; }
+    uint8_clamped(double x)     { *this = x; }
+
+    uint8_clamped& operator=(const uint8_clamped& x) {
+        val = x.val;
+        return *this;
+    }
+
+    uint8_clamped& operator=(uint8_t x) {
+        val = x;
+        return *this;
+    }
+
+    uint8_clamped& operator=(uint16_t x) {
+        val = (x > 255) ? 255 : uint8_t(x);
+        return *this;
+    }
+
+    uint8_clamped& operator=(uint32_t x) {
+        val = (x > 255) ? 255 : uint8_t(x);
+        return *this;
+    }
+
+    uint8_clamped& operator=(int8_t x) {
+        val = (x >= 0) ? uint8_t(x) : 0;
+        return *this;
+    }
+
+    uint8_clamped& operator=(int16_t x) {
+        val = (x >= 0)
+              ? ((x < 255)
+                 ? uint8_t(x)
+                 : 255)
+              : 0;
+        return *this;
+    }
+
+    uint8_clamped& operator=(int32_t x) {
+        val = (x >= 0)
+              ? ((x < 255)
+                 ? uint8_t(x)
+                 : 255)
+              : 0;
+        return *this;
+    }
+
+    uint8_clamped& operator=(const double x) {
+        val = uint8_t(ClampDoubleToUint8(x));
+        return *this;
+    }
+
+    operator uint8_t() const {
+        return val;
+    }
+
+    void staticAsserts() {
+        MOZ_STATIC_ASSERT(sizeof(uint8_clamped) == 1,
+                          "uint8_clamped must be layout-compatible with uint8_t");
+    }
+};
+
+/* Note that we can't use std::numeric_limits here due to uint8_clamped. */
+template<typename T> static inline const bool TypeIsFloatingPoint() { return false; }
+template<> inline const bool TypeIsFloatingPoint<float>() { return true; }
+template<> inline const bool TypeIsFloatingPoint<double>() { return true; }
+
+template<typename T> static inline const bool TypeIsUnsigned() { return false; }
+template<> inline const bool TypeIsUnsigned<uint8_t>() { return true; }
+template<> inline const bool TypeIsUnsigned<uint16_t>() { return true; }
+template<> inline const bool TypeIsUnsigned<uint32_t>() { return true; }
+
+template <typename T>
+class TypedElementsHeader : public ElementsHeader
+{
+    T getElement(uint32_t index) {
+        MOZ_ASSERT(index < length());
+        return reinterpret_cast<T *>(this + 1)[index];
+    }
+
+    inline void assign(uint32_t index, double d);
+
+    void setElement(uint32_t index, T value) {
+        MOZ_ASSERT(index < length());
+        reinterpret_cast<T *>(this + 1)[index] = value;
+    }
+
+  public:
+    uint32_t length() const {
+        MOZ_ASSERT(Uint8Elements <= kind());
+        MOZ_ASSERT(kind() <= Float64Elements);
+        return ElementsHeader::length;
+    }
+
+    bool getOwnElement(JSContext *cx, ObjectImpl *obj, uint32_t index, PropDesc *desc);
+
+    bool defineElement(JSContext *cx, ObjectImpl *obj, uint32_t index, const PropDesc &desc,
+                       bool shouldThrow, bool *succeeded);
+
+    bool setElement(JSContext *cx, ObjectImpl *obj, ObjectImpl *receiver, uint32_t index,
+                    const Value &v, bool *succeeded);
+
+  private:
+    TypedElementsHeader(const TypedElementsHeader &other) MOZ_DELETE;
+    void operator=(const TypedElementsHeader &other) MOZ_DELETE;
+};
+
+template<typename T> inline void
+TypedElementsHeader<T>::assign(uint32_t index, double d)
+{
+    MOZ_NOT_REACHED("didn't specialize for this element type");
+}
+
+template<> inline void
+TypedElementsHeader<uint8_clamped>::assign(uint32_t index, double d)
+{
+    double i = ToInteger(d);
+    uint8_t u = (i <= 0)
+                ? 0
+                : (i >= 255)
+                ? 255
+                : uint8_t(i);
+    setElement(index, uint8_clamped(u));
+}
+
+template<> inline void
+TypedElementsHeader<uint8_t>::assign(uint32_t index, double d)
+{
+    setElement(index, uint8_t(ToUint32(d)));
+}
+
+template<> inline void
+TypedElementsHeader<int8_t>::assign(uint32_t index, double d)
+{
+    /* FIXME: Casting out-of-range signed integers has undefined behavior! */
+    setElement(index, int8_t(ToInt32(d)));
+}
+
+template<> inline void
+TypedElementsHeader<uint16_t>::assign(uint32_t index, double d)
+{
+    setElement(index, uint16_t(ToUint32(d)));
+}
+
+template<> inline void
+TypedElementsHeader<int16_t>::assign(uint32_t index, double d)
+{
+    /* FIXME: Casting out-of-range signed integers has undefined behavior! */
+    setElement(index, int16_t(ToInt32(d)));
+}
+
+template<> inline void
+TypedElementsHeader<uint32_t>::assign(uint32_t index, double d)
+{
+    setElement(index, ToUint32(d));
+}
+
+template<> inline void
+TypedElementsHeader<int32_t>::assign(uint32_t index, double d)
+{
+    /* FIXME: Casting out-of-range signed integers has undefined behavior! */
+    setElement(index, int32_t(ToInt32(d)));
+}
+
+template<> inline void
+TypedElementsHeader<float>::assign(uint32_t index, double d)
+{
+    setElement(index, float(d));
+}
+
+template<> inline void
+TypedElementsHeader<double>::assign(uint32_t index, double d)
+{
+    setElement(index, d);
+}
+
+class Uint8ElementsHeader : public TypedElementsHeader<uint8_t>
+{
+  private:
+    inline bool isUint8Elements() const MOZ_DELETE;
+    inline Uint8ElementsHeader & asUint8Elements() MOZ_DELETE;
+    Uint8ElementsHeader(const Uint8ElementsHeader &other) MOZ_DELETE;
+    void operator=(const Uint8ElementsHeader &other) MOZ_DELETE;
+};
+class Int8ElementsHeader : public TypedElementsHeader<int8_t>
+{
+  private:
+    bool isInt8Elements() const MOZ_DELETE;
+    Int8ElementsHeader & asInt8Elements() MOZ_DELETE;
+    Int8ElementsHeader(const Int8ElementsHeader &other) MOZ_DELETE;
+    void operator=(const Int8ElementsHeader &other) MOZ_DELETE;
+};
+class Uint16ElementsHeader : public TypedElementsHeader<uint16_t>
+{
+  private:
+    bool isUint16Elements() const MOZ_DELETE;
+    Uint16ElementsHeader & asUint16Elements() MOZ_DELETE;
+    Uint16ElementsHeader(const Uint16ElementsHeader &other) MOZ_DELETE;
+    void operator=(const Uint16ElementsHeader &other) MOZ_DELETE;
+};
+class Int16ElementsHeader : public TypedElementsHeader<int16_t>
+{
+  private:
+    bool isInt16Elements() const MOZ_DELETE;
+    Int16ElementsHeader & asInt16Elements() MOZ_DELETE;
+    Int16ElementsHeader(const Int16ElementsHeader &other) MOZ_DELETE;
+    void operator=(const Int16ElementsHeader &other) MOZ_DELETE;
+};
+class Uint32ElementsHeader : public TypedElementsHeader<uint32_t>
+{
+  private:
+    bool isUint32Elements() const MOZ_DELETE;
+    Uint32ElementsHeader & asUint32Elements() MOZ_DELETE;
+    Uint32ElementsHeader(const Uint32ElementsHeader &other) MOZ_DELETE;
+    void operator=(const Uint32ElementsHeader &other) MOZ_DELETE;
+};
+class Int32ElementsHeader : public TypedElementsHeader<int32_t>
+{
+  private:
+    bool isInt32Elements() const MOZ_DELETE;
+    Int32ElementsHeader & asInt32Elements() MOZ_DELETE;
+    Int32ElementsHeader(const Int32ElementsHeader &other) MOZ_DELETE;
+    void operator=(const Int32ElementsHeader &other) MOZ_DELETE;
+};
+class Float32ElementsHeader : public TypedElementsHeader<float>
+{
+  private:
+    bool isFloat32Elements() const MOZ_DELETE;
+    Float32ElementsHeader & asFloat32Elements() MOZ_DELETE;
+    Float32ElementsHeader(const Float32ElementsHeader &other) MOZ_DELETE;
+    void operator=(const Float32ElementsHeader &other) MOZ_DELETE;
+};
+class Float64ElementsHeader : public TypedElementsHeader<double>
+{
+  private:
+    bool isFloat64Elements() const MOZ_DELETE;
+    Float64ElementsHeader & asFloat64Elements() MOZ_DELETE;
+    Float64ElementsHeader(const Float64ElementsHeader &other) MOZ_DELETE;
+    void operator=(const Float64ElementsHeader &other) MOZ_DELETE;
+};
+
+class Uint8ClampedElementsHeader : public TypedElementsHeader<uint8_clamped>
+{
+  private:
+    inline bool isUint8Clamped() const MOZ_DELETE;
+    inline Uint8ClampedElementsHeader & asUint8ClampedElements() MOZ_DELETE;
+    Uint8ClampedElementsHeader(const Uint8ClampedElementsHeader &other) MOZ_DELETE;
+    void operator=(const Uint8ClampedElementsHeader &other) MOZ_DELETE;
+};
+
+class ArrayBufferElementsHeader : public ElementsHeader
+{
+  public:
+    bool getOwnElement(JSContext *cx, ObjectImpl *obj, uint32_t index, PropDesc *desc);
+
+    bool defineElement(JSContext *cx, ObjectImpl *obj, uint32_t index, const PropDesc &desc,
+                       bool shouldThrow, bool *succeeded);
+
+    bool setElement(JSContext *cx, ObjectImpl *obj, ObjectImpl *receiver, uint32_t index,
+                    const Value &v, bool *succeeded);
+
+  private:
+    inline bool isArrayBufferElements() const MOZ_DELETE;
+    inline ArrayBufferElementsHeader & asArrayBufferElements() MOZ_DELETE;
+
+    ArrayBufferElementsHeader(const ArrayBufferElementsHeader &other) MOZ_DELETE;
+    void operator=(const ArrayBufferElementsHeader &other) MOZ_DELETE;
+};
+
+inline DenseElementsHeader &
+ElementsHeader::asDenseElements()
+{
+    MOZ_ASSERT(isDenseElements());
+    return *static_cast<DenseElementsHeader *>(this);
+}
+
+inline SparseElementsHeader &
+ElementsHeader::asSparseElements()
+{
+    MOZ_ASSERT(isSparseElements());
+    return *static_cast<SparseElementsHeader *>(this);
+}
+
+inline Uint8ElementsHeader &
+ElementsHeader::asUint8Elements()
+{
+    MOZ_ASSERT(isUint8Elements());
+    return *static_cast<Uint8ElementsHeader *>(this);
+}
+
+inline Int8ElementsHeader &
+ElementsHeader::asInt8Elements()
+{
+    MOZ_ASSERT(isInt8Elements());
+    return *static_cast<Int8ElementsHeader *>(this);
+}
+
+inline Uint16ElementsHeader &
+ElementsHeader::asUint16Elements()
+{
+    MOZ_ASSERT(isUint16Elements());
+    return *static_cast<Uint16ElementsHeader *>(this);
+}
+
+inline Int16ElementsHeader &
+ElementsHeader::asInt16Elements()
+{
+    MOZ_ASSERT(isInt16Elements());
+    return *static_cast<Int16ElementsHeader *>(this);
+}
+
+inline Uint32ElementsHeader &
+ElementsHeader::asUint32Elements()
+{
+    MOZ_ASSERT(isUint32Elements());
+    return *static_cast<Uint32ElementsHeader *>(this);
+}
+
+inline Int32ElementsHeader &
+ElementsHeader::asInt32Elements()
+{
+    MOZ_ASSERT(isInt32Elements());
+    return *static_cast<Int32ElementsHeader *>(this);
+}
+
+inline Uint8ClampedElementsHeader &
+ElementsHeader::asUint8ClampedElements()
+{
+    MOZ_ASSERT(isUint8ClampedElements());
+    return *static_cast<Uint8ClampedElementsHeader *>(this);
+}
+
+inline Float32ElementsHeader &
+ElementsHeader::asFloat32Elements()
+{
+    MOZ_ASSERT(isFloat32Elements());
+    return *static_cast<Float32ElementsHeader *>(this);
+}
+
+inline Float64ElementsHeader &
+ElementsHeader::asFloat64Elements()
+{
+    MOZ_ASSERT(isFloat64Elements());
+    return *static_cast<Float64ElementsHeader *>(this);
+}
+
+inline ArrayBufferElementsHeader &
+ElementsHeader::asArrayBufferElements()
+{
+    MOZ_ASSERT(isArrayBufferElements());
+    return *static_cast<ArrayBufferElementsHeader *>(this);
+}
 
 /*
  * Header structure for object element arrays. This structure is immediately
@@ -25,9 +776,12 @@ namespace js {
  * pointing to the beginning of that array (the end of this structure).
  * See below for usage of this structure.
  */
+class ArrayBufferObject;
 class ObjectElements
 {
     friend struct ::JSObject;
+    friend class ObjectImpl;
+    friend class ArrayBufferObject;
 
     /* Number of allocated slots. */
     uint32_t capacity;
@@ -84,6 +838,9 @@ struct ObjectOps;
 struct Shape;
 
 class NewObjectCache;
+
+inline Value
+ObjectValue(ObjectImpl &obj);
 
 /*
  * ObjectImpl specifies the internal implementation of an object.  (In contrast
@@ -171,16 +928,114 @@ class ObjectImpl : public gc::Cell
 
     JSObject * asObjectPtr() { return reinterpret_cast<JSObject *>(this); }
 
+    friend inline Value ObjectValue(ObjectImpl &obj);
+
+    /* These functions are public, and they should remain public. */
+
+  public:
+    JSObject * getProto() const {
+        return type_->proto;
+    }
+
+    inline bool isExtensible() const;
+
+    /*
+     * XXX Once the property/element split of bug 586842 is complete, these
+     *     methods should move back to JSObject.
+     */
+    inline bool isDenseArray() const;
+    inline bool isSlowArray() const;
+    inline bool isArray() const;
+
+    inline HeapSlotArray getDenseArrayElements();
+    inline const Value & getDenseArrayElement(uint32_t idx);
+    inline uint32_t getDenseArrayInitializedLength();
+
+    bool makeElementsSparse(JSContext *cx) {
+        NEW_OBJECT_REPRESENTATION_ONLY();
+
+        MOZ_NOT_REACHED("NYI");
+        return false;
+    }
+
+  protected:
+#ifdef DEBUG
+    void checkShapeConsistency();
+#else
+    void checkShapeConsistency() { }
+#endif
+
+  private:
+    /*
+     * Get internal pointers to the range of values starting at start and
+     * running for length.
+     */
+    inline void getSlotRangeUnchecked(uint32_t start, uint32_t length,
+                                      HeapSlot **fixedStart, HeapSlot **fixedEnd,
+                                      HeapSlot **slotsStart, HeapSlot **slotsEnd);
+    inline void getSlotRange(uint32_t start, uint32_t length,
+                             HeapSlot **fixedStart, HeapSlot **fixedEnd,
+                             HeapSlot **slotsStart, HeapSlot **slotsEnd);
+
   protected:
     friend struct GCMarker;
     friend struct Shape;
     friend class NewObjectCache;
+
+    inline bool hasContiguousSlots(uint32_t start, uint32_t count) const;
+
+    inline void invalidateSlotRange(uint32_t start, uint32_t count);
+    inline void initializeSlotRange(uint32_t start, uint32_t count);
+
+    /*
+     * Initialize a flat array of slots to this object at a start slot.  The
+     * caller must ensure that are enough slots.
+     */
+    void initSlotRange(uint32_t start, const Value *vector, uint32_t length);
+
+    /*
+     * Copy a flat array of slots to this object at a start slot. Caller must
+     * ensure there are enough slots in this object.
+     */
+    void copySlotRange(uint32_t start, const Value *vector, uint32_t length);
+
+#ifdef DEBUG
+    enum SentinelAllowed {
+        SENTINEL_NOT_ALLOWED,
+        SENTINEL_ALLOWED
+    };
+
+    /*
+     * Check that slot is in range for the object's allocated slots.
+     * If sentinelAllowed then slot may equal the slot capacity.
+     */
+    bool slotInRange(uint32_t slot, SentinelAllowed sentinel = SENTINEL_NOT_ALLOWED) const;
+#endif
 
     /* Minimum size for dynamically allocated slots. */
     static const uint32_t SLOT_CAPACITY_MIN = 8;
 
     HeapSlot *fixedSlots() const {
         return reinterpret_cast<HeapSlot *>(uintptr_t(this) + sizeof(ObjectImpl));
+    }
+
+    friend class ElementsHeader;
+    friend class DenseElementsHeader;
+    friend class SparseElementsHeader;
+
+    enum DenseElementsResult {
+        Failure,
+        ConvertToSparse,
+        Succeeded
+    };
+
+    DenseElementsResult ensureDenseElementsInitialized(JSContext *cx, uint32_t index,
+                                                       uint32_t extra)
+    {
+        NEW_OBJECT_REPRESENTATION_ONLY();
+
+        MOZ_NOT_REACHED("NYI");
+        return Failure;
     }
 
     /*
@@ -194,12 +1049,14 @@ class ObjectImpl : public gc::Cell
         return shape_;
     }
 
+    inline bool isNative() const;
+
     types::TypeObject *type() const {
         MOZ_ASSERT(!hasLazyType());
         return type_;
     }
 
-    size_t numFixedSlots() const {
+    uint32_t numFixedSlots() const {
         return reinterpret_cast<const shadow::Object *>(this)->numFixedSlots();
     }
 
@@ -215,9 +1072,16 @@ class ObjectImpl : public gc::Cell
      */
     bool hasLazyType() const { return type_->lazy(); }
 
-    inline bool isNative() const;
+    inline uint32_t slotSpan() const;
+
+    /* Compute dynamicSlotsCount() for this object. */
+    inline uint32_t numDynamicSlots() const;
 
     const Shape * nativeLookup(JSContext *cx, jsid id);
+
+#ifdef DEBUG
+    const Shape * nativeLookupNoAllocation(JSContext *cx, jsid id);
+#endif
 
     inline Class *getClass() const;
     inline JSClass *getJSClass() const;
@@ -242,13 +1106,65 @@ class ObjectImpl : public gc::Cell
      */
     inline bool inDictionaryMode() const;
 
+    const Value &getSlot(uint32_t slot) const {
+        MOZ_ASSERT(slotInRange(slot));
+        uint32_t fixed = numFixedSlots();
+        if (slot < fixed)
+            return fixedSlots()[slot];
+        return slots[slot - fixed];
+    }
+
+    HeapSlot *getSlotAddressUnchecked(uint32_t slot) {
+        uint32_t fixed = numFixedSlots();
+        if (slot < fixed)
+            return fixedSlots() + slot;
+        return slots + (slot - fixed);
+    }
+
+    HeapSlot *getSlotAddress(uint32_t slot) {
+        /*
+         * This can be used to get the address of the end of the slots for the
+         * object, which may be necessary when fetching zero-length arrays of
+         * slots (e.g. for callObjVarArray).
+         */
+        MOZ_ASSERT(slotInRange(slot, SENTINEL_ALLOWED));
+        return getSlotAddressUnchecked(slot);
+    }
+
+    HeapSlot &getSlotRef(uint32_t slot) {
+        MOZ_ASSERT(slotInRange(slot));
+        return *getSlotAddress(slot);
+    }
+
+    inline HeapSlot &nativeGetSlotRef(uint32_t slot);
+    inline const Value &nativeGetSlot(uint32_t slot) const;
+
+    inline void setSlot(uint32_t slot, const Value &value);
+    inline void initSlot(uint32_t slot, const Value &value);
+    inline void initSlotUnchecked(uint32_t slot, const Value &value);
+
+    /* For slots which are known to always be fixed, due to the way they are allocated. */
+
+    HeapSlot &getFixedSlotRef(uint32_t slot) {
+        MOZ_ASSERT(slot < numFixedSlots());
+        return fixedSlots()[slot];
+    }
+
+    const Value &getFixedSlot(uint32_t slot) const {
+        MOZ_ASSERT(slot < numFixedSlots());
+        return fixedSlots()[slot];
+    }
+
+    inline void setFixedSlot(uint32_t slot, const Value &value);
+    inline void initFixedSlot(uint32_t slot, const Value &value);
+
     /*
      * Get the number of dynamic slots to allocate to cover the properties in
      * an object with the given number of fixed slots and slot span. The slot
      * capacity is not stored explicitly, and the allocated size of the slot
      * array is kept in sync with this count.
      */
-    static inline size_t dynamicSlotsCount(size_t nfixed, size_t span);
+    static inline uint32_t dynamicSlotsCount(uint32_t nfixed, uint32_t span);
 
     /* Memory usage functions. */
     inline size_t sizeOfThis() const;
@@ -257,6 +1173,11 @@ class ObjectImpl : public gc::Cell
 
     ObjectElements * getElementsHeader() const {
         return ObjectElements::fromElements(elements);
+    }
+
+    ElementsHeader & elementsHeader() const {
+        NEW_OBJECT_REPRESENTATION_ONLY();
+        return *ElementsHeader::fromElements(elements);
     }
 
     inline HeapSlot *fixedElements() const {
@@ -287,6 +1208,19 @@ class ObjectImpl : public gc::Cell
     inline void privateWriteBarrierPost(void **oldval);
     void markChildren(JSTracer *trc);
 
+    /* Private data accessors. */
+
+    inline void *&privateRef(uint32_t nfixed) const; /* XXX should be private, not protected! */
+
+    inline bool hasPrivate() const;
+    inline void *getPrivate() const;
+    inline void setPrivate(void *data);
+    inline void setPrivateUnbarriered(void *data);
+    inline void initPrivate(void *data);
+
+    /* Access private data for an object with a known number of fixed slots. */
+    inline void *getPrivate(uint32_t nfixed) const;
+
     /* JIT Accessors */
     static size_t offsetOfShape() { return offsetof(ObjectImpl, shape_); }
     HeapPtrShape *addressOfShape() { return &shape_; }
@@ -304,16 +1238,34 @@ class ObjectImpl : public gc::Cell
     }
     static size_t getPrivateDataOffset(size_t nfixed) { return getFixedSlotOffset(nfixed); }
     static size_t offsetOfSlots() { return offsetof(ObjectImpl, slots); }
-
-    /* These functions are public, and they should remain public. */
-
-  public:
-    JSObject * getProto() const {
-        return type_->proto;
-    }
-
-    inline bool isExtensible() const;
 };
+
+inline Value
+ObjectValue(ObjectImpl &obj)
+{
+    Value v;
+    v.setObject(*obj.asObjectPtr());
+    return v;
+}
+
+bool
+GetOwnElement(JSContext *cx, ObjectImpl *obj, uint32_t index, PropDesc *desc);
+
+/* Proposed default [[GetP]](Receiver, P) method. */
+extern bool
+GetElement(JSContext *cx, ObjectImpl *obj, ObjectImpl *receiver, uint32_t index, Value *vp);
+
+extern bool
+DefineElement(JSContext *cx, ObjectImpl *obj, uint32_t index, const PropDesc &desc,
+              bool shouldThrow, bool *succeeded);
+
+/* Proposed default [[SetP]](Receiver, P, V) method. */
+extern bool
+SetElement(JSContext *cx, ObjectImpl *obj, ObjectImpl *receiver, uint32_t index, const Value &v,
+           bool *succeeded);
+
+extern bool
+HasElement(JSContext *cx, ObjectImpl *obj, uint32_t index, bool *found);
 
 } /* namespace js */
 

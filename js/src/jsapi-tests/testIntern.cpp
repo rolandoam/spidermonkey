@@ -1,3 +1,7 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
 #include "tests.h"
 #include "jsatom.h"
 
@@ -24,7 +28,7 @@ struct StringWrapper
 } sw;
 
 void
-FinalizeCallback(JSContext *cx, JSFinalizeStatus status)
+FinalizeCallback(JSFreeOp *fop, JSFinalizeStatus status, JSBool isCompartmentGC)
 {
     if (status == JSFINALIZE_START)
         sw.strOk = !JS_IsAboutToBeFinalized(sw.str);
@@ -36,7 +40,7 @@ BEGIN_TEST(testInternAcrossGC)
     sw.strOk = false;
     CHECK(sw.str);
     JS_SetFinalizeCallback(rt, FinalizeCallback);
-    JS_GC(cx);
+    JS_GC(rt);
     CHECK(sw.strOk);
     return true;
 }

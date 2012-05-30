@@ -1,41 +1,9 @@
 /* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
  * vim: set ts=4 sw=4 et tw=99 ft=cpp:
  *
- * ***** BEGIN LICENSE BLOCK *****
- * Version: MPL 1.1/GPL 2.0/LGPL 2.1
- *
- * The contents of this file are subject to the Mozilla Public License Version
- * 1.1 (the "License"); you may not use this file except in compliance with
- * the License. You may obtain a copy of the License at
- * http://www.mozilla.org/MPL/
- *
- * Software distributed under the License is distributed on an "AS IS" basis,
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
- * for the specific language governing rights and limitations under the
- * License.
- *
- * The Original Code is mozilla.org code, released
- * June 24, 2010.
- *
- * The Initial Developer of the Original Code is
- *    The Mozilla Foundation
- *
- * Contributor(s):
- *    Andreas Gal <gal@mozilla.com>
- *
- * Alternatively, the contents of this file may be used under the terms of
- * either of the GNU General Public License Version 2 or later (the "GPL"),
- * or the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
- * in which case the provisions of the GPL or the LGPL are applicable instead
- * of those above. If you wish to allow use of your version of this file only
- * under the terms of either the GPL or the LGPL, and not to allow others to
- * use your version of this file under the terms of the MPL, indicate your
- * decision by deleting the provisions above and replace them with the notice
- * and other provisions required by the GPL or the LGPL. If you do not delete
- * the provisions above, a recipient may use your version of this file under
- * the terms of any one of the MPL, the GPL or the LGPL.
- *
- * ***** END LICENSE BLOCK ***** */
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/Util.h"
 
@@ -48,16 +16,22 @@
 #include "nsDOMClassInfo.h"
 #include "nsGlobalWindow.h"
 #include "nsWrapperCacheInlines.h"
+#include "mozilla/dom/BindingUtils.h"
 
 #include "jsapi.h"
 #include "jsatom.h"
 
 using namespace JS;
+using namespace mozilla::dom;
 
 namespace mozilla {
 namespace dom {
 namespace binding {
 
+enum {
+    JSPROXYSLOT_PROTOSHAPE = 0,
+    JSPROXYSLOT_EXPANDO = 1
+};
 
 static jsid s_prototype_id = JSID_VOID;
 
@@ -99,62 +73,6 @@ Throw(JSContext *cx, nsresult rv)
     return false;
 }
 
-
-// Only set allowNativeWrapper to false if you really know you need it, if in
-// doubt use true. Setting it to false disables security wrappers.
-static bool
-XPCOMObjectToJsval(JSContext *cx, JSObject *scope, xpcObjectHelper &helper,
-                   bool allowNativeWrapper, jsval *rval)
-{
-    XPCLazyCallContext lccx(JS_CALLER, cx, scope);
-
-    nsresult rv;
-    if (!XPCConvert::NativeInterface2JSObject(lccx, rval, NULL, helper, NULL, NULL,
-                                              allowNativeWrapper, &rv)) {
-        // I can't tell if NativeInterface2JSObject throws JS exceptions
-        // or not.  This is a sloppy stab at the right semantics; the
-        // method really ought to be fixed to behave consistently.
-        if (!JS_IsExceptionPending(cx))
-            Throw(cx, NS_FAILED(rv) ? rv : NS_ERROR_UNEXPECTED);
-        return false;
-    }
-
-#ifdef DEBUG
-    JSObject* jsobj = JSVAL_TO_OBJECT(*rval);
-    if (jsobj && !js::GetObjectParent(jsobj))
-        NS_ASSERTION(js::GetObjectClass(jsobj)->flags & JSCLASS_IS_GLOBAL,
-                     "Why did we recreate this wrapper?");
-#endif
-
-    return true;
-}
-
-template<class T>
-static inline JSObject*
-WrapNativeParent(JSContext *cx, JSObject *scope, T *p)
-{
-    if (!p)
-        return NULL;
-
-    nsWrapperCache *cache = GetWrapperCache(p);
-    JSObject* obj;
-    if (cache && (obj = cache->GetWrapper())) {
-#ifdef DEBUG
-        qsObjectHelper helper(p, cache);
-        jsval debugVal;
-
-        bool ok = XPCOMObjectToJsval(cx, scope, helper, false, &debugVal);
-        NS_ASSERTION(ok && JSVAL_TO_OBJECT(debugVal) == obj,
-                     "Unexpected object in nsWrapperCache");
-#endif
-        return obj;
-    }
-
-    qsObjectHelper helper(p, cache);
-    jsval v;
-    return XPCOMObjectToJsval(cx, scope, helper, false, &v) ? JSVAL_TO_OBJECT(v) : NULL;
-}
-
 template<class T>
 static bool
 Wrap(JSContext *cx, JSObject *scope, T *p, nsWrapperCache *cache, jsval *vp)
@@ -162,7 +80,7 @@ Wrap(JSContext *cx, JSObject *scope, T *p, nsWrapperCache *cache, jsval *vp)
     if (xpc_FastGetCachedWrapper(cache, scope, vp))
         return true;
     qsObjectHelper helper(p, cache);
-    return XPCOMObjectToJsval(cx, scope, helper, true, vp);
+    return XPCOMObjectToJsval(cx, scope, helper, NULL, true, vp);
 }
 
 template<class T>
@@ -258,7 +176,7 @@ bool
 DefineConstructor(JSContext *cx, JSObject *obj, DefineInterface aDefine, nsresult *aResult)
 {
     bool enabled;
-    bool defined = !!aDefine(cx, XPCWrappedNativeScope::FindInJSObjectScope(cx, obj), &enabled);
+    bool defined = aDefine(cx, obj, &enabled);
     NS_ASSERTION(!defined || enabled,
                  "We defined a constructor but the new bindings are disabled?");
     *aResult = defined ? NS_OK : NS_ERROR_FAILURE;
@@ -330,7 +248,7 @@ ListBase<LC>::instanceIsListObject(JSContext *cx, JSObject *obj, JSObject *calle
 
 template<class LC>
 JSBool
-ListBase<LC>::length_getter(JSContext *cx, JSObject *obj, jsid id, jsval *vp)
+ListBase<LC>::length_getter(JSContext *cx, JSHandleObject obj, JSHandleId id, jsval *vp)
 {
     if (!instanceIsListObject(cx, obj, NULL))
         return false;
@@ -389,7 +307,7 @@ ListBase<LC>::namedItem(JSContext *cx, JSObject *obj, jsval *name, NameGetterTyp
 }
 
 JSBool
-interface_hasInstance(JSContext *cx, JSObject *obj, const JS::Value *vp, JSBool *bp)
+interface_hasInstance(JSContext *cx, JSHandleObject obj, const JS::Value *vp, JSBool *bp)
 {
     if (vp->isObject()) {
         jsval prototype;
@@ -432,9 +350,9 @@ enum {
 };
 
 static JSBool
-InvalidateProtoShape_add(JSContext *cx, JSObject *obj, jsid id, jsval *vp);
+InvalidateProtoShape_add(JSContext *cx, JSHandleObject obj, JSHandleId id, jsval *vp);
 static JSBool
-InvalidateProtoShape_set(JSContext *cx, JSObject *obj, jsid id, JSBool strict, jsval *vp);
+InvalidateProtoShape_set(JSContext *cx, JSHandleObject obj, JSHandleId id, JSBool strict, jsval *vp);
 
 js::Class sInterfacePrototypeClass = {
     "Object",
@@ -449,7 +367,7 @@ js::Class sInterfacePrototypeClass = {
 };
 
 static JSBool
-InvalidateProtoShape_add(JSContext *cx, JSObject *obj, jsid id, jsval *vp)
+InvalidateProtoShape_add(JSContext *cx, JSHandleObject obj, JSHandleId id, jsval *vp)
 {
     if (JSID_IS_STRING(id) && JS_InstanceOf(cx, obj, Jsvalify(&sInterfacePrototypeClass), NULL))
         js::SetReservedSlot(obj, 0, PrivateUint32Value(CHECK_CACHE));
@@ -457,14 +375,29 @@ InvalidateProtoShape_add(JSContext *cx, JSObject *obj, jsid id, jsval *vp)
 }
 
 static JSBool
-InvalidateProtoShape_set(JSContext *cx, JSObject *obj, jsid id, JSBool strict, jsval *vp)
+InvalidateProtoShape_set(JSContext *cx, JSHandleObject obj, JSHandleId id, JSBool strict, jsval *vp)
 {
     return InvalidateProtoShape_add(cx, obj, id, vp);
 }
 
 template<class LC>
 JSObject *
-ListBase<LC>::getPrototype(JSContext *cx, XPCWrappedNativeScope *scope)
+ListBase<LC>::getPrototype(JSContext *cx, JSObject *receiver, bool *enabled)
+{
+    *enabled = true;
+
+    XPCWrappedNativeScope *scope =
+        XPCWrappedNativeScope::FindInJSObjectScope(cx, receiver);
+    if (!scope)
+        return false;
+
+    return getPrototype(cx, scope, receiver);
+}
+
+template<class LC>
+JSObject *
+ListBase<LC>::getPrototype(JSContext *cx, XPCWrappedNativeScope *scope,
+                           JSObject *receiver)
 {
     nsDataHashtable<nsDepCharHashKey, JSObject*> &cache =
         scope->GetCachedDOMPrototypes();
@@ -475,11 +408,11 @@ ListBase<LC>::getPrototype(JSContext *cx, XPCWrappedNativeScope *scope)
             xpc_UnmarkGrayObject(interfacePrototype);
             return interfacePrototype;
         }
-    } else if (!cache.Init()) {
-        return NULL;
+    } else {
+        cache.Init();
     }
 
-    JSObject* proto = Base::getPrototype(cx, scope);
+    JSObject* proto = Base::getPrototype(cx, scope, receiver);
     if (!proto)
         return NULL;
 
@@ -518,7 +451,7 @@ ListBase<LC>::getPrototype(JSContext *cx, XPCWrappedNativeScope *scope)
     if (!JS_LinkConstructorAndPrototype(cx, interface, interfacePrototype))
         return NULL;
 
-    if (!JS_DefineProperty(cx, global, sInterfaceClass.name, OBJECT_TO_JSVAL(interface), NULL,
+    if (!JS_DefineProperty(cx, receiver, sInterfaceClass.name, OBJECT_TO_JSVAL(interface), NULL,
                            NULL, 0))
         return NULL;
 
@@ -526,7 +459,7 @@ ListBase<LC>::getPrototype(JSContext *cx, XPCWrappedNativeScope *scope)
     // overwrite the value set by InvalidateProtoShape_add when we set our own properties.
     js::SetReservedSlot(interfacePrototype, 0, PrivateUint32Value(USE_CACHE));
 
-    if (!cache.Put(sInterfaceClass.name, interfacePrototype))
+    if (!cache.Put(sInterfaceClass.name, interfacePrototype, fallible_t()))
         return NULL;
 
     return interfacePrototype;
@@ -534,26 +467,26 @@ ListBase<LC>::getPrototype(JSContext *cx, XPCWrappedNativeScope *scope)
 
 template<class LC>
 JSObject *
-ListBase<LC>::create(JSContext *cx, XPCWrappedNativeScope *scope, ListType *aList,
+ListBase<LC>::create(JSContext *cx, JSObject *scope, ListType *aList,
                      nsWrapperCache* aWrapperCache, bool *triedToWrap)
 {
     *triedToWrap = true;
 
-    JSObject *parent = WrapNativeParent(cx, scope->GetGlobalJSObject(), aList->GetParentObject());
+    JSObject *parent = WrapNativeParent(cx, scope, aList->GetParentObject());
     if (!parent)
         return NULL;
 
-    JSAutoEnterCompartment ac;
-    if (js::GetGlobalForObjectCrossCompartment(parent) != scope->GetGlobalJSObject()) {
-        if (!ac.enter(cx, parent))
-            return NULL;
+    JSObject *global = js::GetGlobalForObjectCrossCompartment(parent);
 
-        scope = XPCWrappedNativeScope::FindInJSObjectScope(cx, parent);
+    JSAutoEnterCompartment ac;
+    if (global != scope) {
+        if (!ac.enter(cx, global))
+            return NULL;
     }
 
-    JSObject *proto = getPrototype(cx, scope, triedToWrap);
+    JSObject *proto = getPrototype(cx, global, triedToWrap);
     if (!proto && !*triedToWrap)
-        aWrapperCache->ClearIsProxy();
+        aWrapperCache->ClearIsDOMBinding();
     if (!proto)
         return NULL;
     JSObject *obj = NewProxyObject(cx, &ListBase<LC>::instance,
@@ -735,10 +668,13 @@ ListBase<LC>::ensureExpandoObject(JSContext *cx, JSObject *obj)
             return NULL;
 
         JSCompartment *compartment = js::GetObjectCompartment(obj);
-        xpc::CompartmentPrivate *priv =
-            static_cast<xpc::CompartmentPrivate *>(JS_GetCompartmentPrivate(compartment));
-        if (!priv->RegisterDOMExpandoObject(expando))
+        xpc::CompartmentPrivate *priv = xpc::GetCompartmentPrivate(compartment);
+        if (!priv->RegisterDOMExpandoObject(obj))
             return NULL;
+
+        nsWrapperCache* cache;
+        CallQueryInterface(getListObject(obj), &cache);
+        cache->SetPreservingWrapper(true);
 
         js::SetProxyExtra(obj, JSPROXYSLOT_EXPANDO, ObjectValue(*expando));
         JS_SetPrivate(expando, js::GetProxyPrivate(obj).toPrivate());
@@ -835,14 +771,6 @@ ListBase<LC>::enumerate(JSContext *cx, JSObject *proxy, AutoIdVector &props)
     JSObject *proto = JS_GetPrototype(proxy);
     return getOwnPropertyNames(cx, proxy, props) &&
            (!proto || js::GetPropertyNames(cx, proto, 0, &props));
-}
-
-template<class LC>
-bool
-ListBase<LC>::fix(JSContext *cx, JSObject *proxy, Value *vp)
-{
-    vp->setUndefined();
-    return true;
 }
 
 template<class LC>
@@ -992,8 +920,11 @@ ListBase<LC>::resolveNativeName(JSContext *cx, JSObject *proxy, jsid id, JSPrope
 
 template<class LC>
 bool
-ListBase<LC>::nativeGet(JSContext *cx, JSObject *proxy, JSObject *proto, jsid id, bool *found, Value *vp)
+ListBase<LC>::nativeGet(JSContext *cx, JSObject *proxy_, JSObject *proto, jsid id_, bool *found, Value *vp)
 {
+    JS::RootedObject proxy(cx, proxy_);
+    JS::RootedId id(cx, id_);
+
     uint32_t cache = js::GetReservedSlot(proto, 0).toPrivateUint32();
     if (cache == CHECK_CACHE) {
         bool isClean;
@@ -1016,7 +947,7 @@ ListBase<LC>::nativeGet(JSContext *cx, JSObject *proxy, JSObject *proto, jsid id
     }
 
     for (size_t n = 0; n < sProtoPropertiesCount; ++n) {
-        if (id == sProtoProperties[n].id) {
+        if (sProtoProperties[n].id == id) {
             *found = true;
             if (!vp)
                 return true;
@@ -1025,7 +956,7 @@ ListBase<LC>::nativeGet(JSContext *cx, JSObject *proxy, JSObject *proto, jsid id
         }
     }
     for (size_t n = 0; n < sProtoMethodsCount; ++n) {
-        if (id == sProtoMethods[n].id) {
+        if (sProtoMethods[n].id == id) {
             *found = true;
             if (!vp)
                 return true;
@@ -1277,7 +1208,7 @@ ListBase<LC>::obj_toString(JSContext *cx, JSObject *proxy)
 
 template<class LC>
 void
-ListBase<LC>::finalize(JSContext *cx, JSObject *proxy)
+ListBase<LC>::finalize(JSFreeOp *fop, JSObject *proxy)
 {
     ListType *list = getListObject(proxy);
     nsWrapperCache *cache;
@@ -1285,17 +1216,23 @@ ListBase<LC>::finalize(JSContext *cx, JSObject *proxy)
     if (cache) {
         cache->ClearWrapper();
     }
-    NS_RELEASE(list);
+    XPCJSRuntime *rt = nsXPConnect::GetRuntimeInstance();
+    if (rt) {
+        rt->DeferredRelease(nativeToSupports(list));
+    }
+    else {
+        NS_RELEASE(list);
+    }
 }
 
 
 JSObject*
-NoBase::getPrototype(JSContext *cx, XPCWrappedNativeScope *scope)
+NoBase::getPrototype(JSContext *cx, XPCWrappedNativeScope *scope, JSObject *receiver)
 {
     // We need to pass the object prototype to JS_NewObject. If we pass NULL then the JS engine
     // will look up a prototype on the global by using the class' name and we'll recurse into
     // getPrototype.
-    return JS_GetObjectPrototype(cx, scope->GetGlobalJSObject());
+    return JS_GetObjectPrototype(cx, receiver);
 }
 
 

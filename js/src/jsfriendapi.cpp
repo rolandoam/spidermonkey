@@ -1,41 +1,9 @@
 /* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
  * vim: set ts=4 sw=4 et tw=99:
  *
- * ***** BEGIN LICENSE BLOCK *****
- * Version: MPL 1.1/GPL 2.0/LGPL 2.1
- *
- * The contents of this file are subject to the Mozilla Public License Version
- * 1.1 (the "License"); you may not use this file except in compliance with
- * the License. You may obtain a copy of the License at
- * http://www.mozilla.org/MPL/
- *
- * Software distributed under the License is distributed on an "AS IS" basis,
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
- * for the specific language governing rights and limitations under the
- * License.
- *
- * The Original Code is SpiderMonkey code.
- *
- * The Initial Developer of the Original Code is
- *   Mozilla Foundation
- * Portions created by the Initial Developer are Copyright (C) 2010
- * the Initial Developer. All Rights Reserved.
- *
- * Contributor(s):
- *
- * Alternatively, the contents of this file may be used under the terms of
- * either of the GNU General Public License Version 2 or later (the "GPL"),
- * or the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
- * in which case the provisions of the GPL or the LGPL are applicable instead
- * of those above. If you wish to allow use of your version of this file only
- * under the terms of either the GPL or the LGPL, and not to allow others to
- * use your version of this file under the terms of the MPL, indicate your
- * decision by deleting the provisions above and replace them with the notice
- * and other provisions required by the GPL or the LGPL. If you do not delete
- * the provisions above, a recipient may use your version of this file under
- * the terms of any one of the MPL, the GPL or the LGPL.
- *
- * ***** END LICENSE BLOCK ***** */
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/GuardObjects.h"
 #include "mozilla/StandardInteger.h"
@@ -69,15 +37,17 @@ JS_GetAnonymousString(JSRuntime *rt)
 }
 
 JS_FRIEND_API(JSObject *)
-JS_FindCompilationScope(JSContext *cx, JSObject *obj)
+JS_FindCompilationScope(JSContext *cx, JSObject *obj_)
 {
+    RootedObject obj(cx, obj_);
+
     /*
      * We unwrap wrappers here. This is a little weird, but it's what's being
      * asked of us.
      */
     if (obj->isWrapper())
         obj = UnwrapObject(obj);
-    
+
     /*
      * Innerize the target_obj so that we compile in the correct (inner)
      * scope.
@@ -98,7 +68,7 @@ JS_GetObjectFunction(JSObject *obj)
 JS_FRIEND_API(JSObject *)
 JS_GetGlobalForFrame(JSStackFrame *fp)
 {
-    return &Valueify(fp)->scopeChain().global();
+    return &Valueify(fp)->global();
 }
 
 JS_FRIEND_API(JSBool)
@@ -132,30 +102,51 @@ JS_NewObjectWithUniqueType(JSContext *cx, JSClass *clasp, JSObject *proto, JSObj
 }
 
 JS_FRIEND_API(void)
-js::GCForReason(JSContext *cx, gcreason::Reason reason)
+js::PrepareCompartmentForGC(JSCompartment *comp)
 {
-    GC(cx, NULL, GC_NORMAL, reason);
+    comp->scheduleGC();
 }
 
 JS_FRIEND_API(void)
-js::CompartmentGCForReason(JSContext *cx, JSCompartment *comp, gcreason::Reason reason)
+js::PrepareForFullGC(JSRuntime *rt)
 {
-    /* We cannot GC the atoms compartment alone; use a full GC instead. */
-    JS_ASSERT(comp != cx->runtime->atomsCompartment);
+    for (CompartmentsIter c(rt); !c.done(); c.next())
+        c->scheduleGC();
+}
 
-    GC(cx, comp, GC_NORMAL, reason);
+JS_FRIEND_API(bool)
+js::IsGCScheduled(JSRuntime *rt)
+{
+    for (CompartmentsIter c(rt); !c.done(); c.next()) {
+        if (c->isGCScheduled())
+            return true;
+    }
+
+    return false;
 }
 
 JS_FRIEND_API(void)
-js::ShrinkingGC(JSContext *cx, gcreason::Reason reason)
+js::SkipCompartmentForGC(JSCompartment *comp)
 {
-    GC(cx, NULL, GC_SHRINK, reason);
+    comp->unscheduleGC();
 }
 
 JS_FRIEND_API(void)
-js::IncrementalGC(JSContext *cx, gcreason::Reason reason)
+js::GCForReason(JSRuntime *rt, gcreason::Reason reason)
 {
-    GCSlice(cx, NULL, GC_NORMAL, reason);
+    GC(rt, GC_NORMAL, reason);
+}
+
+JS_FRIEND_API(void)
+js::ShrinkingGC(JSRuntime *rt, gcreason::Reason reason)
+{
+    GC(rt, GC_SHRINK, reason);
+}
+
+JS_FRIEND_API(void)
+js::IncrementalGC(JSRuntime *rt, gcreason::Reason reason)
+{
+    GCSlice(rt, GC_NORMAL, reason);
 }
 
 JS_FRIEND_API(void)
@@ -183,7 +174,7 @@ JS_TraceShapeCycleCollectorChildren(JSTracer *trc, void *shape)
 }
 
 static bool
-DefineHelpProperty(JSContext *cx, JSObject *obj, const char *prop, const char *value)
+DefineHelpProperty(JSContext *cx, HandleObject obj, const char *prop, const char *value)
 {
     JSAtom *atom = js_Atomize(cx, value, strlen(value));
     if (!atom)
@@ -195,9 +186,9 @@ DefineHelpProperty(JSContext *cx, JSObject *obj, const char *prop, const char *v
 }
 
 JS_FRIEND_API(bool)
-JS_DefineFunctionsWithHelp(JSContext *cx, JSObject *obj, const JSFunctionSpecWithHelp *fs)
+JS_DefineFunctionsWithHelp(JSContext *cx, JSObject *obj_, const JSFunctionSpecWithHelp *fs)
 {
-    RootObject objRoot(cx, &obj);
+    RootedObject obj(cx, obj_);
 
     JS_ASSERT(cx->compartment != cx->runtime->atomsCompartment);
 
@@ -208,8 +199,9 @@ JS_DefineFunctionsWithHelp(JSContext *cx, JSObject *obj, const JSFunctionSpecWit
         if (!atom)
             return false;
 
-        JSFunction *fun = js_DefineFunction(cx, objRoot,
-                                            ATOM_TO_JSID(atom), fs->call, fs->nargs, fs->flags);
+        RootedFunction fun(cx);
+        fun = js_DefineFunction(cx, obj, RootedId(cx, AtomToId(atom)),
+                                fs->call, fs->nargs, fs->flags);
         if (!fun)
             return false;
 
@@ -225,19 +217,6 @@ JS_DefineFunctionsWithHelp(JSContext *cx, JSObject *obj, const JSFunctionSpecWit
     }
 
     return true;
-}
-
-AutoPreserveCompartment::AutoPreserveCompartment(JSContext *cx
-                                                 JS_GUARD_OBJECT_NOTIFIER_PARAM_NO_INIT)
-  : cx(cx), oldCompartment(cx->compartment)
-{
-    JS_GUARD_OBJECT_NOTIFIER_INIT;
-}
-
-AutoPreserveCompartment::~AutoPreserveCompartment()
-{
-    /* The old compartment may have been destroyed, so we can't use cx->setCompartment. */
-    cx->compartment = oldCompartment;
 }
 
 AutoSwitchCompartment::AutoSwitchCompartment(JSContext *cx, JSCompartment *newCompartment
@@ -292,6 +271,12 @@ js::GetGlobalForObjectCrossCompartment(JSObject *obj)
     return &obj->global();
 }
 
+JS_FRIEND_API(void)
+js::NotifyAnimationActivity(JSObject *obj)
+{
+    obj->compartment()->lastAnimationTime = PRMJ_Now();
+}
+
 JS_FRIEND_API(uint32_t)
 js::GetObjectSlotSpan(JSObject *obj)
 {
@@ -311,10 +296,10 @@ js::IsOriginalScriptFunction(JSFunction *fun)
 }
 
 JS_FRIEND_API(JSFunction *)
-js::DefineFunctionWithReserved(JSContext *cx, JSObject *obj, const char *name, JSNative call,
+js::DefineFunctionWithReserved(JSContext *cx, JSObject *obj_, const char *name, JSNative call,
                                unsigned nargs, unsigned attrs)
 {
-    RootObject objRoot(cx, &obj);
+    RootedObject obj(cx, obj_);
 
     JS_THREADSAFE_ASSERT(cx->compartment != cx->runtime->atomsCompartment);
     CHECK_REQUEST(cx);
@@ -322,15 +307,16 @@ js::DefineFunctionWithReserved(JSContext *cx, JSObject *obj, const char *name, J
     JSAtom *atom = js_Atomize(cx, name, strlen(name));
     if (!atom)
         return NULL;
-    return js_DefineFunction(cx, objRoot, ATOM_TO_JSID(atom), call, nargs, attrs,
+    return js_DefineFunction(cx, obj, RootedId(cx, AtomToId(atom)),
+                             call, nargs, attrs,
                              JSFunction::ExtendedFinalizeKind);
 }
 
 JS_FRIEND_API(JSFunction *)
 js::NewFunctionWithReserved(JSContext *cx, JSNative native, unsigned nargs, unsigned flags,
-                            JSObject *parent, const char *name)
+                            JSObject *parent_, const char *name)
 {
-    RootObject parentRoot(cx, &parent);
+    RootedObject parent(cx, parent_);
 
     JS_THREADSAFE_ASSERT(cx->compartment != cx->runtime->atomsCompartment);
     JSAtom *atom;
@@ -346,35 +332,36 @@ js::NewFunctionWithReserved(JSContext *cx, JSNative native, unsigned nargs, unsi
             return NULL;
     }
 
-    return js_NewFunction(cx, NULL, native, nargs, flags, parentRoot, atom,
+    return js_NewFunction(cx, NULL, native, nargs, flags, parent, atom,
                           JSFunction::ExtendedFinalizeKind);
 }
 
 JS_FRIEND_API(JSFunction *)
-js::NewFunctionByIdWithReserved(JSContext *cx, JSNative native, unsigned nargs, unsigned flags, JSObject *parent,
+js::NewFunctionByIdWithReserved(JSContext *cx, JSNative native, unsigned nargs, unsigned flags, JSObject *parent_,
                                 jsid id)
 {
-    RootObject parentRoot(cx, &parent);
+    RootedObject parent(cx, parent_);
 
     JS_ASSERT(JSID_IS_STRING(id));
     JS_THREADSAFE_ASSERT(cx->compartment != cx->runtime->atomsCompartment);
     CHECK_REQUEST(cx);
     assertSameCompartment(cx, parent);
 
-    return js_NewFunction(cx, NULL, native, nargs, flags, parentRoot, JSID_TO_ATOM(id),
+    return js_NewFunction(cx, NULL, native, nargs, flags, parent, JSID_TO_ATOM(id),
                           JSFunction::ExtendedFinalizeKind);
 }
 
 JS_FRIEND_API(JSObject *)
-js::InitClassWithReserved(JSContext *cx, JSObject *obj, JSObject *parent_proto,
+js::InitClassWithReserved(JSContext *cx, JSObject *obj_, JSObject *parent_proto,
                           JSClass *clasp, JSNative constructor, unsigned nargs,
                           JSPropertySpec *ps, JSFunctionSpec *fs,
                           JSPropertySpec *static_ps, JSFunctionSpec *static_fs)
 {
+    RootedObject obj(cx, obj_);
+
     CHECK_REQUEST(cx);
     assertSameCompartment(cx, obj, parent_proto);
-    RootObject objRoot(cx, &obj);
-    return js_InitClass(cx, objRoot, parent_proto, Valueify(clasp), constructor,
+    return js_InitClass(cx, obj, parent_proto, Valueify(clasp), constructor,
                         nargs, ps, fs, static_ps, static_fs, NULL,
                         JSFunction::ExtendedFinalizeKind);
 }
@@ -650,26 +637,6 @@ GetContextOutstandingRequests(const JSContext *cx)
 {
     return cx->outstandingRequests;
 }
-
-AutoSkipConservativeScan::AutoSkipConservativeScan(JSContext *cx
-                                                   MOZ_GUARD_OBJECT_NOTIFIER_PARAM_IN_IMPL)
-  : context(cx)
-{
-    MOZ_GUARD_OBJECT_NOTIFIER_INIT;
-
-    JSRuntime *rt = context->runtime;
-    JS_ASSERT(rt->requestDepth >= 1);
-    JS_ASSERT(!rt->conservativeGC.requestThreshold);
-    if (rt->requestDepth == 1)
-        rt->conservativeGC.requestThreshold = 1;
-}
-
-AutoSkipConservativeScan::~AutoSkipConservativeScan()
-{
-    JSRuntime *rt = context->runtime;
-    if (rt->requestDepth == 1)
-        rt->conservativeGC.requestThreshold = 0;
-}
 #endif
 
 JS_FRIEND_API(JSCompartment *)
@@ -717,35 +684,39 @@ SetGCSliceCallback(JSRuntime *rt, GCSliceCallback callback)
     return old;
 }
 
-JS_FRIEND_API(bool)
-WantGCSlice(JSRuntime *rt)
+jschar *
+GCDescription::formatMessage(JSRuntime *rt) const
 {
-    if (rt->gcZeal() == gc::ZealFrameVerifierValue || rt->gcZeal() == gc::ZealFrameGCValue)
-        return true;
+    return rt->gcStats.formatMessage();
+}
 
-    if (rt->gcIncrementalState != gc::NO_INCREMENTAL)
-        return true;
-
-    return false;
+jschar *
+GCDescription::formatJSON(JSRuntime *rt, uint64_t timestamp) const
+{
+    return rt->gcStats.formatJSON(timestamp);
 }
 
 JS_FRIEND_API(void)
-NotifyDidPaint(JSContext *cx)
+NotifyDidPaint(JSRuntime *rt)
 {
-    JSRuntime *rt = cx->runtime;
-
     if (rt->gcZeal() == gc::ZealFrameVerifierValue) {
-        gc::VerifyBarriers(cx);
+        gc::VerifyBarriers(rt);
         return;
     }
 
     if (rt->gcZeal() == gc::ZealFrameGCValue) {
-        GCSlice(cx, NULL, GC_NORMAL, gcreason::REFRESH_FRAME);
+        PrepareForFullGC(rt);
+        GCSlice(rt, GC_NORMAL, gcreason::REFRESH_FRAME);
         return;
     }
 
-    if (rt->gcIncrementalState != gc::NO_INCREMENTAL && !rt->gcInterFrameGC)
-        GCSlice(cx, rt->gcIncrementalCompartment, GC_NORMAL, gcreason::REFRESH_FRAME);
+    if (rt->gcIncrementalState != gc::NO_INCREMENTAL && !rt->gcInterFrameGC) {
+        for (CompartmentsIter c(rt); !c.done(); c.next()) {
+            if (c->needsBarrier())
+                PrepareCompartmentForGC(c);
+        }
+        GCSlice(rt, GC_NORMAL, gcreason::REFRESH_FRAME);
+    }
 
     rt->gcInterFrameGC = false;
 }
@@ -753,7 +724,7 @@ NotifyDidPaint(JSContext *cx)
 extern JS_FRIEND_API(bool)
 IsIncrementalGCEnabled(JSRuntime *rt)
 {
-    return rt->gcIncrementalEnabled;
+    return rt->gcIncrementalEnabled && rt->gcMode == JSGC_MODE_INCREMENTAL;
 }
 
 extern JS_FRIEND_API(void)
@@ -780,6 +751,12 @@ IsIncrementalBarrierNeededOnObject(JSObject *obj)
     return obj->compartment()->needsBarrier();
 }
 
+JS_FRIEND_API(bool)
+IsIncrementalBarrierNeededOnScript(JSScript *script)
+{
+    return script->compartment()->needsBarrier();
+}
+
 extern JS_FRIEND_API(void)
 IncrementalReferenceBarrier(void *ptr)
 {
@@ -791,6 +768,14 @@ IncrementalReferenceBarrier(void *ptr)
         JSObject::writeBarrierPre((JSObject *) ptr);
     else if (kind == JSTRACE_STRING)
         JSString::writeBarrierPre((JSString *) ptr);
+    else if (kind == JSTRACE_SCRIPT)
+        JSScript::writeBarrierPre((JSScript *) ptr);
+    else if (kind == JSTRACE_SHAPE)
+        Shape::writeBarrierPre((Shape *) ptr);
+    else if (kind == JSTRACE_BASE_SHAPE)
+        BaseShape::writeBarrierPre((BaseShape *) ptr);
+    else if (kind == JSTRACE_TYPE_OBJECT)
+        types::TypeObject::writeBarrierPre((types::TypeObject *) ptr);
     else
         JS_NOT_REACHED("invalid trace kind");
 }
@@ -799,6 +784,12 @@ extern JS_FRIEND_API(void)
 IncrementalValueBarrier(const Value &v)
 {
     HeapValue::writeBarrierPre(v);
+}
+
+extern JS_FRIEND_API(void)
+PokeGC(JSRuntime *rt)
+{
+    rt->gcPoke = true;
 }
 
 JS_FRIEND_API(JSObject *)

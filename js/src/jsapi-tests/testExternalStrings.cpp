@@ -1,3 +1,7 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
 #include "tests.h"
 #include "jsutil.h"
 
@@ -39,7 +43,7 @@ BEGIN_TEST(testExternalStrings)
     // clear that newborn root
     JS_NewUCStringCopyN(cx, arr, arrlen);
 
-    JS_GC(cx);
+    JS_GC(rt);
 
     // a generous fudge factor to account for strings rooted by conservative gc
     const unsigned epsilon = 10;

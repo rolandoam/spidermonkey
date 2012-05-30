@@ -1,47 +1,15 @@
 /* -*- Mode: C; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
  *
- * ***** BEGIN LICENSE BLOCK *****
- * Version: MPL 1.1/GPL 2.0/LGPL 2.1
- *
- * The contents of this file are subject to the Mozilla Public License Version
- * 1.1 (the "License"); you may not use this file except in compliance with
- * the License. You may obtain a copy of the License at
- * http://www.mozilla.org/MPL/
- *
- * Software distributed under the License is distributed on an "AS IS" basis,
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
- * for the specific language governing rights and limitations under the
- * License.
- *
- * The Original Code is Mozilla Communicator client code, released
- * March 31, 1998.
- *
- * The Initial Developer of the Original Code is
- * Netscape Communications Corporation.
- * Portions created by the Initial Developer are Copyright (C) 1998
- * the Initial Developer. All Rights Reserved.
- *
- * Contributor(s):
- *   John Bandhauer <jband@netscape.com> (original author)
- *
- * Alternatively, the contents of this file may be used under the terms of
- * either of the GNU General Public License Version 2 or later (the "GPL"),
- * or the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
- * in which case the provisions of the GPL or the LGPL are applicable instead
- * of those above. If you wish to allow use of your version of this file only
- * under the terms of either the GPL or the LGPL, and not to allow others to
- * use your version of this file under the terms of the MPL, indicate your
- * decision by deleting the provisions above and replace them with the notice
- * and other provisions required by the GPL or the LGPL. If you do not delete
- * the provisions above, a recipient may use your version of this file under
- * the terms of any one of the MPL, the GPL or the LGPL.
- *
- * ***** END LICENSE BLOCK ***** */
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 /* Private maps (hashtables). */
 
 #ifndef xpcmaps_h___
 #define xpcmaps_h___
+
+#include "js/HashTable.h"
 
 // Maps...
 
@@ -633,42 +601,6 @@ private:
     JSDHashTable *mTable;
 };
 
-class XPCNativeWrapperMap
-{
-public:
-    static XPCNativeWrapperMap* newMap(int size);
-
-    inline JSObject* Add(JSObject* nw)
-    {
-        NS_PRECONDITION(nw,"bad param");
-        JSDHashEntryStub* entry = (JSDHashEntryStub*)
-            JS_DHashTableOperate(mTable, nw, JS_DHASH_ADD);
-        if (!entry)
-            return nsnull;
-        if (entry->key)
-            return (JSObject*) entry->key;
-        entry->key = nw;
-        return nw;
-    }
-
-    inline void Remove(JSObject* nw)
-    {
-        NS_PRECONDITION(nw,"bad param");
-        JS_DHashTableOperate(mTable, nw, JS_DHASH_REMOVE);
-    }
-
-    inline uint32_t Count() {return mTable->entryCount;}
-    inline uint32_t Enumerate(JSDHashEnumerator f, void *arg)
-        {return JS_DHashTableEnumerate(mTable, f, arg);}
-
-    ~XPCNativeWrapperMap();
-private:
-    XPCNativeWrapperMap();    // no implementation
-    XPCNativeWrapperMap(int size);
-private:
-    JSDHashTable *mTable;
-};
-
 class WrappedNative2WrapperMap
 {
     static struct JSDHashTableOps sOps;
@@ -744,78 +676,77 @@ private:
 
 class JSObject2JSObjectMap
 {
-    static struct JSDHashTableOps sOps;
+    typedef js::HashMap<JSObject *, JSObject *, js::PointerHasher<JSObject *, 3>,
+                        js::SystemAllocPolicy> Map;
 
 public:
-    struct Entry : public JSDHashEntryHdr
-    {
-        JSObject* key;
-        JSObject* value;
-    };
-
     static JSObject2JSObjectMap* newMap(int size)
     {
         JSObject2JSObjectMap* map = new JSObject2JSObjectMap(size);
-        if (map && map->mTable)
+        if (map && map->mTable.initialized())
             return map;
         delete map;
         return nsnull;
     }
 
-    inline JSObject* Find(JSObject* key)
-    {
+    inline JSObject* Find(JSObject* key) {
         NS_PRECONDITION(key, "bad param");
-        Entry* entry = (Entry*)
-            JS_DHashTableOperate(mTable, key, JS_DHASH_LOOKUP);
-        if (JS_DHASH_ENTRY_IS_FREE(entry))
-            return nsnull;
-        return entry->value;
+        if (Map::Ptr p = mTable.lookup(key))
+            return p->value;
+        return nsnull;
     }
 
-    // Note: If the entry already exists, return the old value.
-    inline JSObject* Add(JSObject *key, JSObject *value)
-    {
+    /* Note: If the entry already exists, return the old value. */
+    inline JSObject* Add(JSObject *key, JSObject *value) {
         NS_PRECONDITION(key,"bad param");
-        Entry* entry = (Entry*)
-            JS_DHashTableOperate(mTable, key, JS_DHASH_ADD);
-        if (!entry)
+        Map::AddPtr p = mTable.lookupForAdd(key);
+        if (p)
+            return p->value;
+        if (!mTable.add(p, key, value))
             return nsnull;
-        if (entry->key)
-            return entry->value;
-        entry->key = key;
-        entry->value = value;
         return value;
     }
 
-    inline void Remove(JSObject* key)
-    {
+    inline void Remove(JSObject* key) {
         NS_PRECONDITION(key,"bad param");
-        JS_DHashTableOperate(mTable, key, JS_DHASH_REMOVE);
+        mTable.remove(key);
     }
 
-    inline uint32_t Count() {return mTable->entryCount;}
+    inline uint32_t Count() { return mTable.count(); }
 
-    inline uint32_t Enumerate(JSDHashEnumerator f, void *arg)
-    {
-        return JS_DHashTableEnumerate(mTable, f, arg);
+    void Sweep() {
+        for (Map::Enum e(mTable); !e.empty(); e.popFront()) {
+            if (JS_IsAboutToBeFinalized(e.front().key) || JS_IsAboutToBeFinalized(e.front().value))
+                e.removeFront();
+        }
     }
 
-    ~JSObject2JSObjectMap()
-    {
-        if (mTable)
-            JS_DHashTableDestroy(mTable);
+    void Reparent(JSContext *aCx, JSObject *aNewInner) {
+        for (Map::Enum e(mTable); !e.empty(); e.popFront()) {
+            /*
+             * We reparent wrappers that have as their parent an inner window
+             * whose outer has the new inner window as its current inner.
+             */
+            JSObject *parent = JS_GetParent(e.front().value);
+            JSObject *outer = JS_ObjectToOuterObject(aCx, parent);
+            if (outer) {
+                JSObject *inner = JS_ObjectToInnerObject(aCx, outer);
+                if (inner == aNewInner && inner != parent)
+                    JS_SetParent(aCx, e.front().value, aNewInner);
+            } else {
+                JS_ClearPendingException(aCx);
+            }
+        }
     }
 
 private:
-    JSObject2JSObjectMap(int size)
-    {
-        mTable = JS_NewDHashTable(&sOps, nsnull, sizeof(Entry), size);
+    JSObject2JSObjectMap() MOZ_DELETE;
+    JSObject2JSObjectMap(int size) {
+        mTable.init(size);
     }
 
-    JSObject2JSObjectMap(); // no implementation
-
 private:
-    JSDHashTable *mTable;
+    Map mTable;
 };
 
 #endif /* xpcmaps_h___ */

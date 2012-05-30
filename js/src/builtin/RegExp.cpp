@@ -1,51 +1,19 @@
 /* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
  * vim: set ts=8 sw=4 et tw=99 ft=cpp:
  *
- * ***** BEGIN LICENSE BLOCK *****
- * Version: MPL 1.1/GPL 2.0/LGPL 2.1
- *
- * The contents of this file are subject to the Mozilla Public License Version
- * 1.1 (the "License"); you may not use this file except in compliance with
- * the License. You may obtain a copy of the License at
- * http://www.mozilla.org/MPL/
- *
- * Software distributed under the License is distributed on an "AS IS" basis,
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
- * for the specific language governing rights and limitations under the
- * License.
- *
- * The Original Code is Mozilla SpiderMonkey JavaScript code.
- *
- * The Initial Developer of the Original Code is
- * the Mozilla Foundation.
- * Portions created by the Initial Developer are Copyright (C) 2011
- * the Initial Developer. All Rights Reserved.
- *
- * Contributor(s):
- *  Chris Leary <cdleary@mozilla.com>
- *
- * Alternatively, the contents of this file may be used under the terms of
- * either the GNU General Public License Version 2 or later (the "GPL"), or
- * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
- * in which case the provisions of the GPL or the LGPL are applicable instead
- * of those above. If you wish to allow use of your version of this file only
- * under the terms of either the GPL or the LGPL, and not to allow others to
- * use your version of this file under the terms of the MPL, indicate your
- * decision by deleting the provisions above and replace them with the notice
- * and other provisions required by the GPL or the LGPL. If you do not delete
- * the provisions above, a recipient may use your version of this file under
- * the terms of any one of the MPL, the GPL or the LGPL.
- *
- * ***** END LICENSE BLOCK ***** */
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "jscntxt.h"
+
+#include "vm/StringBuffer.h"
 
 #include "builtin/RegExp.h"
 
 #include "vm/MethodGuard-inl.h"
 #include "vm/RegExpObject-inl.h"
 #include "vm/RegExpStatics-inl.h"
-#include "vm/StringBuffer-inl.h"
 
 using namespace js;
 using namespace js::types;
@@ -53,20 +21,20 @@ using namespace js::types;
 class RegExpMatchBuilder
 {
     JSContext   * const cx;
-    JSObject    * const array;
+    RootedObject array;
 
     bool setProperty(JSAtom *name, Value v) {
-        return !!js_DefineProperty(cx, array, ATOM_TO_JSID(name), &v,
-                                   JS_PropertyStub, JS_StrictPropertyStub, JSPROP_ENUMERATE);
+        return !!baseops::DefineProperty(cx, array, RootedId(cx, AtomToId(name)), &v,
+                                         JS_PropertyStub, JS_StrictPropertyStub, JSPROP_ENUMERATE);
     }
 
   public:
-    RegExpMatchBuilder(JSContext *cx, JSObject *array) : cx(cx), array(array) {}
+    RegExpMatchBuilder(JSContext *cx, JSObject *array) : cx(cx), array(cx, array) {}
 
     bool append(uint32_t index, Value v) {
         JS_ASSERT(!array->getOps()->getElement);
-        return !!js_DefineElement(cx, array, index, &v, JS_PropertyStub, JS_StrictPropertyStub,
-                                  JSPROP_ENUMERATE);
+        return !!baseops::DefineElement(cx, array, index, &v, JS_PropertyStub, JS_StrictPropertyStub,
+                                        JSPROP_ENUMERATE);
     }
 
     bool setIndex(int index) {
@@ -80,9 +48,11 @@ class RegExpMatchBuilder
 };
 
 static bool
-CreateRegExpMatchResult(JSContext *cx, JSString *input, const jschar *chars, size_t length,
+CreateRegExpMatchResult(JSContext *cx, JSString *input_, const jschar *chars, size_t length,
                         MatchPairs *matchPairs, Value *rval)
 {
+    RootedString input(cx, input_);
+
     /*
      * Create the (slow) result array for a match.
      *
@@ -92,7 +62,7 @@ CreateRegExpMatchResult(JSContext *cx, JSString *input, const jschar *chars, siz
      *  input:          input string
      *  index:          start index for the match
      */
-    JSObject *array = NewSlowEmptyArray(cx);
+    RootedObject array(cx, NewSlowEmptyArray(cx));
     if (!array)
         return false;
 
@@ -224,7 +194,8 @@ CompileRegExpObject(JSContext *cx, RegExpObjectBuilder &builder, CallArgs args)
 {
     if (args.length() == 0) {
         RegExpStatics *res = cx->regExpStatics();
-        RegExpObject *reobj = builder.build(cx->runtime->emptyString, res->getFlags());
+        RegExpObject *reobj = builder.build(RootedAtom(cx, cx->runtime->emptyString),
+                                            res->getFlags());
         if (!reobj)
             return false;
         args.rval() = ObjectValue(*reobj);
@@ -271,7 +242,7 @@ CompileRegExpObject(JSContext *cx, RegExpObjectBuilder &builder, CallArgs args)
         if (!sourceObj.getProperty(cx, cx->runtime->atomState.sourceAtom, &v))
             return false;
 
-        RegExpObject *reobj = builder.build(&v.toString()->asAtom(), flags);
+        RegExpObject *reobj = builder.build(RootedAtom(cx, &v.toString()->asAtom()), flags);
         if (!reobj)
             return false;
 
@@ -303,7 +274,7 @@ CompileRegExpObject(JSContext *cx, RegExpObjectBuilder &builder, CallArgs args)
             return false;
     }
 
-    JSAtom *escapedSourceStr = EscapeNakedForwardSlashes(cx, source);
+    RootedAtom escapedSourceStr(cx, EscapeNakedForwardSlashes(cx, source));
     if (!escapedSourceStr)
         return false;
 
@@ -401,7 +372,7 @@ static JSFunctionSpec regexp_methods[] = {
 
 #define DEFINE_STATIC_GETTER(name, code)                                        \
     static JSBool                                                               \
-    name(JSContext *cx, JSObject *obj, jsid id, jsval *vp)                      \
+    name(JSContext *cx, HandleObject obj, HandleId id, jsval *vp)               \
     {                                                                           \
         RegExpStatics *res = cx->regExpStatics();                               \
         code;                                                                   \
@@ -427,7 +398,7 @@ DEFINE_STATIC_GETTER(static_paren9_getter,       return res->createParen(cx, 9, 
 
 #define DEFINE_STATIC_SETTER(name, code)                                        \
     static JSBool                                                               \
-    name(JSContext *cx, JSObject *obj, jsid id, JSBool strict, jsval *vp)       \
+    name(JSContext *cx, HandleObject obj, HandleId id, JSBool strict, jsval *vp)\
     {                                                                           \
         RegExpStatics *res = cx->regExpStatics();                               \
         code;                                                                   \
@@ -481,23 +452,22 @@ js_InitRegExpClass(JSContext *cx, JSObject *obj)
 {
     JS_ASSERT(obj->isNative());
 
-    GlobalObject *global = &obj->asGlobal();
+    Rooted<GlobalObject*> global(cx, &obj->asGlobal());
 
-    JSObject *proto = global->createBlankPrototype(cx, &RegExpClass);
+    RootedObject proto(cx, global->createBlankPrototype(cx, &RegExpClass));
     if (!proto)
         return NULL;
     proto->setPrivate(NULL);
 
-    RegExpObject *reproto = &proto->asRegExp();
-    RegExpObjectBuilder builder(cx, reproto);
-    if (!builder.build(cx->runtime->emptyString, RegExpFlag(0)))
+    RegExpObjectBuilder builder(cx, &proto->asRegExp());
+    if (!builder.build(RootedAtom(cx, cx->runtime->emptyString), RegExpFlag(0)))
         return NULL;
 
     if (!DefinePropertiesAndBrand(cx, proto, NULL, regexp_methods))
         return NULL;
 
-    JSFunction *ctor = global->createConstructor(cx, regexp_construct, &RegExpClass,
-                                                 CLASS_ATOM(cx, RegExp), 2);
+    RootedFunction ctor(cx);
+    ctor = global->createConstructor(cx, regexp_construct, CLASS_NAME(cx, RegExp), 2);
     if (!ctor)
         return NULL;
 
@@ -575,14 +545,14 @@ ExecuteRegExp(JSContext *cx, Native native, unsigned argc, Value *vp)
     if (!obj)
         return ok;
 
-    RegExpObject &reobj = obj->asRegExp();
+    Rooted<RegExpObject*> reobj(cx, &obj->asRegExp());
 
     RegExpGuard re;
-    if (StartsWithGreedyStar(reobj.getSource())) {
-        if (!GetSharedForGreedyStar(cx, reobj.getSource(), reobj.getFlags(), &re))
+    if (StartsWithGreedyStar(reobj->getSource())) {
+        if (!GetSharedForGreedyStar(cx, reobj->getSource(), reobj->getFlags(), &re))
             return false;
     } else {
-        if (!reobj.getShared(cx, &re))
+        if (!reobj->getShared(cx, &re))
             return false;
     }
 
@@ -601,7 +571,7 @@ ExecuteRegExp(JSContext *cx, Native native, unsigned argc, Value *vp)
     size_t length = input->length();
 
     /* Step 4. */
-    const Value &lastIndex = reobj.getLastIndex();
+    const Value &lastIndex = reobj->getLastIndex();
 
     /* Step 5. */
     double i;
@@ -614,7 +584,7 @@ ExecuteRegExp(JSContext *cx, Native native, unsigned argc, Value *vp)
 
     /* Step 9a. */
     if (i < 0 || i > length) {
-        reobj.zeroLastIndex();
+        reobj->zeroLastIndex();
         args.rval() = NullValue();
         return true;
     }
@@ -630,9 +600,9 @@ ExecuteRegExp(JSContext *cx, Native native, unsigned argc, Value *vp)
     /* Step 11 (with sticky extension). */
     if (re->global() || (!args.rval().isNull() && re->sticky())) {
         if (args.rval().isNull())
-            reobj.zeroLastIndex();
+            reobj->zeroLastIndex();
         else
-            reobj.setLastIndex(lastIndexInt);
+            reobj->setLastIndex(lastIndexInt);
     }
 
     return true;

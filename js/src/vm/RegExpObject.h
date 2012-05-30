@@ -1,42 +1,9 @@
 /* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
  * vim: set ts=8 sw=4 et tw=99 ft=cpp:
  *
- * ***** BEGIN LICENSE BLOCK *****
- * Version: MPL 1.1/GPL 2.0/LGPL 2.1
- *
- * The contents of this file are subject to the Mozilla Public License Version
- * 1.1 (the "License"); you may not use this file except in compliance with
- * the License. You may obtain a copy of the License at
- * http://www.mozilla.org/MPL/
- *
- * Software distributed under the License is distributed on an "AS IS" basis,
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
- * for the specific language governing rights and limitations under the
- * License.
- *
- * The Original Code is Mozilla SpiderMonkey JavaScript code.
- *
- * The Initial Developer of the Original Code is
- * the Mozilla Foundation.
- * Portions created by the Initial Developer are Copyright (C) 2011
- * the Initial Developer. All Rights Reserved.
- *
- * Contributor(s):
- *  Chris Leary <cdleary@mozilla.com>
- *
- * Alternatively, the contents of this file may be used under the terms of
- * either the GNU General Public License Version 2 or later (the "GPL"), or
- * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
- * in which case the provisions of the GPL or the LGPL are applicable instead
- * of those above. If you wish to allow use of your version of this file only
- * under the terms of either the GPL or the LGPL, and not to allow others to
- * use your version of this file under the terms of the MPL, indicate your
- * decision by deleting the provisions above and replace them with the notice
- * and other provisions required by the GPL or the LGPL. If you do not delete
- * the provisions above, a recipient may use your version of this file under
- * the terms of any one of the MPL, the GPL or the LGPL.
- *
- * ***** END LICENSE BLOCK ***** */
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #ifndef RegExpObject_h__
 #define RegExpObject_h__
@@ -44,6 +11,7 @@
 #include "mozilla/Attributes.h"
 
 #include <stddef.h>
+#include "jscntxt.h"
 #include "jsobj.h"
 
 #include "js/TemplateLib.h"
@@ -51,10 +19,8 @@
 #include "yarr/Yarr.h"
 #if ENABLE_YARR_JIT
 #include "yarr/YarrJIT.h"
-#include "yarr/YarrSyntaxChecker.h"
-#else
-#include "yarr/pcre/pcre.h"
 #endif
+#include "yarr/YarrSyntaxChecker.h"
 
 /*
  * JavaScript Regular Expressions
@@ -87,8 +53,8 @@ enum RegExpRunStatus
 
 class RegExpObjectBuilder
 {
-    JSContext       *cx;
-    RegExpObject    *reobj_;
+    JSContext             *cx;
+    Rooted<RegExpObject*> reobj_;
 
     bool getOrCreate();
     bool getOrCreateClone(RegExpObject *proto);
@@ -98,11 +64,11 @@ class RegExpObjectBuilder
 
     RegExpObject *reobj() { return reobj_; }
 
-    RegExpObject *build(JSAtom *source, RegExpFlag flags);
-    RegExpObject *build(JSAtom *source, RegExpShared &shared);
+    RegExpObject *build(HandleAtom source, RegExpFlag flags);
+    RegExpObject *build(HandleAtom source, RegExpShared &shared);
 
     /* Perform a VM-internal clone. */
-    RegExpObject *clone(RegExpObject *other, RegExpObject *proto);
+    RegExpObject *clone(Handle<RegExpObject*> other, Handle<RegExpObject*> proto);
 };
 
 JSObject *
@@ -112,68 +78,51 @@ namespace detail {
 
 class RegExpCode
 {
-#if ENABLE_YARR_JIT
     typedef JSC::Yarr::BytecodePattern BytecodePattern;
     typedef JSC::Yarr::ErrorCode ErrorCode;
+    typedef JSC::Yarr::YarrPattern YarrPattern;
+#if ENABLE_YARR_JIT
     typedef JSC::Yarr::JSGlobalData JSGlobalData;
     typedef JSC::Yarr::YarrCodeBlock YarrCodeBlock;
-    typedef JSC::Yarr::YarrPattern YarrPattern;
 
     /* Note: Native code is valid only if |codeBlock.isFallBack() == false|. */
     YarrCodeBlock   codeBlock;
-    BytecodePattern *byteCode;
-#else
-    JSRegExp        *compiled;
 #endif
+    BytecodePattern *byteCode;
 
   public:
     RegExpCode()
       :
 #if ENABLE_YARR_JIT
         codeBlock(),
-        byteCode(NULL)
-#else
-        compiled(NULL)
 #endif
+        byteCode(NULL)
     { }
 
     ~RegExpCode() {
 #if ENABLE_YARR_JIT
         codeBlock.release();
+#endif
         if (byteCode)
             Foreground::delete_<BytecodePattern>(byteCode);
-#else
-        if (compiled)
-            jsRegExpFree(compiled);
-#endif
     }
 
     static bool checkSyntax(JSContext *cx, TokenStream *tokenStream, JSLinearString *source) {
-#if ENABLE_YARR_JIT
         ErrorCode error = JSC::Yarr::checkSyntax(*source);
         if (error == JSC::Yarr::NoError)
             return true;
 
         reportYarrError(cx, tokenStream, error);
         return false;
-#else
-# error "Syntax checking not implemented for !ENABLE_YARR_JIT"
-#endif
     }
 
 #if ENABLE_YARR_JIT
     static inline bool isJITRuntimeEnabled(JSContext *cx);
-    static void reportYarrError(JSContext *cx, TokenStream *ts, JSC::Yarr::ErrorCode error);
-#else
-    static void reportPCREError(JSContext *cx, int error);
 #endif
+    static void reportYarrError(JSContext *cx, TokenStream *ts, JSC::Yarr::ErrorCode error);
 
     static size_t getOutputSize(size_t pairCount) {
-#if ENABLE_YARR_JIT
         return pairCount * 2;
-#else
-        return pairCount * 3; /* Should be x2, but PCRE has... needs. */
-#endif
     }
 
     bool compile(JSContext *cx, JSLinearString &pattern, unsigned *parenCount, RegExpFlag flags);
@@ -197,13 +146,16 @@ class RegExpCode
  * deleted. However, some RegExpShareds are not deleted:
  *
  *   1. Any RegExpShared with pointers from the C++ stack is not deleted.
- *   2. Any RegExpShared that was installed in a RegExpObject during an
+ *   2. Any RegExpShared which has been embedded into jitcode is not deleted.
+ *      This rarely comes into play, as jitcode is usually purged before the
+ *      RegExpShared are sweeped.
+ *   3. Any RegExpShared that was installed in a RegExpObject during an
  *      incremental GC is not deleted. This is because the RegExpObject may have
  *      been traced through before the new RegExpShared was installed, in which
  *      case deleting the RegExpShared would turn the RegExpObject's reference
  *      into a dangling pointer
  *
- * The activeUseCount and gcNumberWhenUsed fields are used to track these two
+ * The activeUseCount and gcNumberWhenUsed fields are used to track these
  * conditions.
  */
 class RegExpShared
@@ -236,6 +188,8 @@ class RegExpShared
     /* Accessors */
 
     size_t getParenCount() const        { return parenCount; }
+    void incRef()                       { activeUseCount++; }
+    void decRef()                       { JS_ASSERT(activeUseCount > 0); activeUseCount--; }
 
     /* Accounts for the "0" (whole match) pair. */
     size_t pairCount() const            { return parenCount + 1; }
@@ -259,22 +213,21 @@ class RegExpGuard
   public:
     RegExpGuard() : re_(NULL) {}
     RegExpGuard(RegExpShared &re) : re_(&re) {
-        re_->activeUseCount++;
+        re_->incRef();
     }
     void init(RegExpShared &re) {
         JS_ASSERT(!re_);
         re_ = &re;
-        re_->activeUseCount++;
+        re_->incRef();
     }
     ~RegExpGuard() {
-        if (re_) {
-            JS_ASSERT(re_->activeUseCount > 0);
-            re_->activeUseCount--;
-        }
+        if (re_)
+            re_->decRef();
     }
     bool initialized() const { return !!re_; }
-    RegExpShared *operator->() { JS_ASSERT(initialized()); return re_; }
-    RegExpShared &operator*() { JS_ASSERT(initialized()); return *re_; }
+    RegExpShared *re() const { JS_ASSERT(initialized()); return re_; }
+    RegExpShared *operator->() { return re(); }
+    RegExpShared &operator*() { return *re(); }
 };
 
 class RegExpCompartment
@@ -366,7 +319,7 @@ class RegExpObject : public JSObject
                     TokenStream *ts);
 
     static RegExpObject *
-    createNoStatics(JSContext *cx, JSAtom *atom, RegExpFlag flags, TokenStream *ts);
+    createNoStatics(JSContext *cx, HandleAtom atom, RegExpFlag flags, TokenStream *ts);
 
     /*
      * Run the regular expression over the input text.
@@ -433,7 +386,7 @@ class RegExpObject : public JSObject
      */
     Shape *assignInitialShape(JSContext *cx);
 
-    inline bool init(JSContext *cx, JSAtom *source, RegExpFlag flags);
+    inline bool init(JSContext *cx, HandleAtom source, RegExpFlag flags);
 
     /*
      * Precondition: the syntax for |source| has already been validated.
@@ -441,9 +394,6 @@ class RegExpObject : public JSObject
      */
     bool createShared(JSContext *cx, RegExpGuard *g);
     RegExpShared *maybeShared() const;
-
-    RegExpObject() MOZ_DELETE;
-    RegExpObject &operator=(const RegExpObject &reo) MOZ_DELETE;
 
     /* Call setShared in preference to setPrivate. */
     void setPrivate(void *priv) MOZ_DELETE;
@@ -469,8 +419,12 @@ ParseRegExpFlags(JSContext *cx, JSString *flagStr, RegExpFlag *flagsOut);
 inline bool
 RegExpToShared(JSContext *cx, JSObject &obj, RegExpGuard *g);
 
+template<XDRMode mode>
 bool
-XDRScriptRegExpObject(JSXDRState *xdr, HeapPtrObject *objp);
+XDRScriptRegExpObject(XDRState<mode> *xdr, HeapPtrObject *objp);
+
+extern JSObject *
+CloneScriptRegExpObject(JSContext *cx, RegExpObject &re);
 
 } /* namespace js */
 

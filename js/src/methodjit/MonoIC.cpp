@@ -1,42 +1,9 @@
 /* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
  * vim: set ts=4 sw=4 et tw=99:
  *
- * ***** BEGIN LICENSE BLOCK *****
- * Version: MPL 1.1/GPL 2.0/LGPL 2.1
- *
- * The contents of this file are subject to the Mozilla Public License Version
- * 1.1 (the "License"); you may not use this file except in compliance with
- * the License. You may obtain a copy of the License at
- * http://www.mozilla.org/MPL/
- *
- * Software distributed under the License is distributed on an "AS IS" basis,
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
- * for the specific language governing rights and limitations under the
- * License.
- *
- * The Original Code is Mozilla SpiderMonkey JavaScript 1.9 code, released
- * May 28, 2008.
- *
- * The Initial Developer of the Original Code is
- *   Brendan Eich <brendan@mozilla.org>
- *
- * Contributor(s):
- *   David Anderson <danderson@mozilla.com>
- *   David Mandelin <dmandelin@mozilla.com>
- *
- * Alternatively, the contents of this file may be used under the terms of
- * either of the GNU General Public License Version 2 or later (the "GPL"),
- * or the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
- * in which case the provisions of the GPL or the LGPL are applicable instead
- * of those above. If you wish to allow use of your version of this file only
- * under the terms of either the GPL or the LGPL, and not to allow others to
- * use your version of this file under the terms of the MPL, indicate your
- * decision by deleting the provisions above and replace them with the notice
- * and other provisions required by the GPL or the LGPL. If you do not delete
- * the provisions above, a recipient may use your version of this file under
- * the terms of any one of the MPL, the GPL or the LGPL.
- *
- * ***** END LICENSE BLOCK ***** */
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 #include "jsscope.h"
 #include "jsnum.h"
 #include "MonoIC.h"
@@ -86,12 +53,12 @@ PatchGetFallback(VMFrame &f, ic::GetGlobalNameIC *ic)
 void JS_FASTCALL
 ic::GetGlobalName(VMFrame &f, ic::GetGlobalNameIC *ic)
 {
-    JSObject &obj = f.fp()->scopeChain().global();
+    JSObject &obj = f.fp()->global();
     PropertyName *name = f.script()->getName(GET_UINT32_INDEX(f.pc()));
 
     RecompilationMonitor monitor(f.cx);
 
-    const Shape *shape = obj.nativeLookup(f.cx, js_CheckForStringIndex(ATOM_TO_JSID(name)));
+    const Shape *shape = obj.nativeLookup(f.cx, NameToId(name));
 
     if (monitor.recompiled()) {
         stubs::Name(f);
@@ -99,7 +66,7 @@ ic::GetGlobalName(VMFrame &f, ic::GetGlobalNameIC *ic)
     }
 
     if (!shape ||
-        !shape->hasDefaultGetterOrIsMethod() ||
+        !shape->hasDefaultGetter() ||
         !shape->hasSlot())
     {
         if (shape)
@@ -143,15 +110,6 @@ PatchSetFallback(VMFrame &f, ic::SetGlobalNameIC *ic)
 }
 
 void
-SetGlobalNameIC::patchExtraShapeGuard(Repatcher &repatcher, const Shape *shape)
-{
-    JS_ASSERT(hasExtraStub);
-
-    JSC::CodeLocationLabel label(JSC::MacroAssemblerCodePtr(extraStub.start()));
-    repatcher.repatch(label.dataLabelPtrAtOffset(extraShapeGuard), shape);
-}
-
-void
 SetGlobalNameIC::patchInlineShapeGuard(Repatcher &repatcher, const Shape *shape)
 {
     JSC::CodeLocationDataLabelPtr label = fastPathStart.dataLabelPtrAtOffset(shapeOffset);
@@ -165,8 +123,7 @@ UpdateSetGlobalName(VMFrame &f, ic::SetGlobalNameIC *ic, JSObject *obj, const Sh
     if (!shape)
         return Lookup_Uncacheable;
 
-    if (shape->isMethod() ||
-        !shape->hasDefaultSetter() ||
+    if (!shape->hasDefaultSetter() ||
         !shape->writable() ||
         !shape->hasSlot() ||
         obj->watched())
@@ -191,13 +148,13 @@ UpdateSetGlobalName(VMFrame &f, ic::SetGlobalNameIC *ic, JSObject *obj, const Sh
 void JS_FASTCALL
 ic::SetGlobalName(VMFrame &f, ic::SetGlobalNameIC *ic)
 {
-    JSObject &obj = f.fp()->scopeChain().global();
+    JSObject &obj = f.fp()->global();
     JSScript *script = f.script();
     PropertyName *name = script->getName(GET_UINT32_INDEX(f.pc()));
 
     RecompilationMonitor monitor(f.cx);
 
-    const Shape *shape = obj.nativeLookup(f.cx, ATOM_TO_JSID(name));
+    const Shape *shape = obj.nativeLookup(f.cx, NameToId(name));
 
     if (!monitor.recompiled()) {
         LookupStatus status = UpdateSetGlobalName(f, ic, &obj, shape);
@@ -223,6 +180,7 @@ class EqualityICLinker : public LinkerHelper
             return false;
         JS_ASSERT(!f.regs.inlined());
         if (!f.chunk()->execPools.append(pool)) {
+            markVerified();
             pool->release();
             js_ReportOutOfMemory(cx);
             return false;
@@ -242,7 +200,7 @@ class EqualityCompiler : public BaseCompiler
     Vector<Jump, 4, SystemAllocPolicy> jumpList;
     Jump trueJump;
     Jump falseJump;
-    
+
   public:
     EqualityCompiler(VMFrame &f, EqualityICInfo &ic)
         : BaseCompiler(f.cx), f(f), ic(ic), jumpList(SystemAllocPolicy())
@@ -263,7 +221,7 @@ class EqualityCompiler : public BaseCompiler
     {
         falseJump = j;
     }
-    
+
     void generateStringPath(Assembler &masm)
     {
         const ValueRemat &lvr = ic.lvr;
@@ -276,18 +234,18 @@ class EqualityCompiler : public BaseCompiler
             Jump lhsFail = masm.testString(Assembler::NotEqual, lvr.typeReg());
             linkToStub(lhsFail);
         }
-        
+
         if (!rvr.isType(JSVAL_TYPE_STRING)) {
             Jump rhsFail = masm.testString(Assembler::NotEqual, rvr.typeReg());
             linkToStub(rhsFail);
         }
 
         RegisterID tmp = ic.tempReg;
-        
+
         /* JSString::isAtom === (lengthAndFlags & ATOM_MASK == 0) */
         JS_STATIC_ASSERT(JSString::ATOM_FLAGS == 0);
         Imm32 atomMask(JSString::ATOM_MASK);
-        
+
         masm.load32(Address(lvr.dataReg(), JSString::offsetOfLengthAndFlags()), tmp);
         Jump lhsNotAtomized = masm.branchTest32(Assembler::NonZero, tmp, atomMask);
         linkToStub(lhsNotAtomized);
@@ -316,12 +274,12 @@ class EqualityCompiler : public BaseCompiler
     {
         ValueRemat &lvr = ic.lvr;
         ValueRemat &rvr = ic.rvr;
-        
+
         if (!lvr.isConstant() && !lvr.isType(JSVAL_TYPE_OBJECT)) {
             Jump lhsFail = masm.testObject(Assembler::NotEqual, lvr.typeReg());
             linkToStub(lhsFail);
         }
-        
+
         if (!rvr.isConstant() && !rvr.isType(JSVAL_TYPE_OBJECT)) {
             Jump rhsFail = masm.testObject(Assembler::NotEqual, rvr.typeReg());
             linkToStub(rhsFail);
@@ -385,7 +343,7 @@ class EqualityCompiler : public BaseCompiler
             Assembler masm;
             Value rval = f.regs.sp[-1];
             Value lval = f.regs.sp[-2];
-            
+
             if (rval.isObject() && lval.isObject()) {
                 generateObjectPath(masm);
                 ic.generated = true;
@@ -439,6 +397,7 @@ NativeStubLinker::init(JSContext *cx)
     stub.pool = pool;
     stub.jump = locationOf(done);
     if (!chunk->nativeCallStubs.append(stub)) {
+        markVerified();
         pool->release();
         return false;
     }
@@ -521,7 +480,7 @@ mjit::NativeStubEpilogue(VMFrame &f, Assembler &masm, NativeStubLinker::FinalJum
 /*
  * Calls have an inline path and an out-of-line path. The inline path is used
  * in the fastest case: the method has JIT'd code, and |argc == nargs|.
- * 
+ *
  * The inline path and OOL path are separated by a guard on the identity of
  * the callee object. This guard starts as NULL and always fails on the first
  * hit. On the OOL path, the callee is verified to be both a function and a
@@ -556,6 +515,9 @@ mjit::NativeStubEpilogue(VMFrame &f, Assembler &masm, NativeStubLinker::FinalJum
  * scripted native, then a small stub is generated which inlines the native
  * invocation.
  */
+namespace js {
+namespace mjit {
+
 class CallCompiler : public BaseCompiler
 {
     VMFrame &f;
@@ -608,16 +570,24 @@ class CallCompiler : public BaseCompiler
         Address scriptAddr(ic.funObjReg, JSFunction::offsetOfNativeOrScript());
         masm.loadPtr(scriptAddr, t0);
 
-        /*
-         * Test if script->nmap is NULL - same as checking ncode, but faster
-         * here since ncode has two failure modes and we need to load out of
-         * nmap anyway.
-         */
-        size_t offset = callingNew
-                        ? offsetof(JSScript, jitArityCheckCtor)
-                        : offsetof(JSScript, jitArityCheckNormal);
+        // Test that:
+        // - script->jitInfo is not NULL
+        // - script->jitInfo->jitHandle{Ctor,Normal}->value is neither NULL nor UNJITTABLE, and
+        // - script->jitInfo->jitHandle{Ctor,Normal}->value->arityCheckEntry is not NULL.
+        masm.loadPtr(Address(t0, JSScript::offsetOfJITInfo()), t0);
+        Jump hasNoJitInfo = masm.branchPtr(Assembler::Equal, t0, ImmPtr(NULL));
+        size_t offset = JSScript::JITScriptSet::jitHandleOffset(callingNew,
+                                                                f.cx->compartment->needsBarrier());
         masm.loadPtr(Address(t0, offset), t0);
-        Jump hasCode = masm.branchPtr(Assembler::Above, t0, ImmPtr(JS_UNJITTABLE_SCRIPT));
+        Jump hasNoJitCode = masm.branchPtr(Assembler::BelowOrEqual, t0,
+                                           ImmPtr(JSScript::JITScriptHandle::UNJITTABLE));
+
+        masm.loadPtr(Address(t0, offsetof(JITScript, arityCheckEntry)), t0);
+
+        Jump hasCode = masm.branchPtr(Assembler::NotEqual, t0, ImmPtr(0));
+
+        hasNoJitInfo.linkTo(masm.label(), &masm);
+        hasNoJitCode.linkTo(masm.label(), &masm);
 
         /*
          * Write the rejoin state to indicate this is a compilation call made
@@ -627,7 +597,7 @@ class CallCompiler : public BaseCompiler
         masm.storePtr(ImmPtr((void *) ic.frameSize.rejoinState(f.pc(), false)),
                       FrameAddress(offsetof(VMFrame, stubRejoin)));
 
-        masm.bumpStubCounter(f.script(), f.pc(), Registers::tempCallReg());
+        masm.bumpStubCount(f.script(), f.pc(), Registers::tempCallReg());
 
         /* Try and compile. On success we get back the nmap pointer. */
         void *compilePtr = JS_FUNC_TO_DATA_PTR(void *, stubs::CompileFunction);
@@ -692,7 +662,7 @@ class CallCompiler : public BaseCompiler
     bool patchInlinePath(JSScript *script, JSObject *obj)
     {
         JS_ASSERT(ic.frameSize.isStatic());
-        JITScript *jit = script->getJIT(callingNew);
+        JITScript *jit = script->getJIT(callingNew, f.cx->compartment->needsBarrier());
 
         /* Very fast path. */
         Repatcher repatch(f.chunk());
@@ -802,7 +772,7 @@ class CallCompiler : public BaseCompiler
 
         RecompilationMonitor monitor(cx);
 
-        if (!CallJSNative(cx, fun->u.n.native, args))
+        if (!CallJSNative(cx, fun->native(), args))
             THROWV(true);
 
         types::TypeScript::Monitor(f.cx, f.script(), f.pc(), args.rval());
@@ -851,7 +821,7 @@ class CallCompiler : public BaseCompiler
 
         /* N.B. After this call, the frame will have a dynamic frame size. */
         if (ic.frameSize.isDynamic()) {
-            masm.bumpStubCounter(f.script(), f.pc(), Registers::tempCallReg());
+            masm.bumpStubCount(f.script(), f.pc(), Registers::tempCallReg());
             masm.fallibleVMCall(cx->typeInferenceEnabled(),
                                 JS_FUNC_TO_DATA_PTR(void *, ic::SplatApplyArgs),
                                 f.regs.pc, NULL, initialFrameDepth);
@@ -859,7 +829,7 @@ class CallCompiler : public BaseCompiler
 
         Registers tempRegs = Registers::tempCallRegMask();
         RegisterID t0 = tempRegs.takeAnyReg().reg();
-        masm.bumpStubCounter(f.script(), f.pc(), t0);
+        masm.bumpStubCount(f.script(), f.pc(), t0);
 
         int32_t storeFrameDepth = ic.frameSize.isStatic() ? initialFrameDepth : -1;
         masm.setupFallibleABICall(cx->typeInferenceEnabled(), f.regs.pc, storeFrameDepth);
@@ -905,7 +875,7 @@ class CallCompiler : public BaseCompiler
             masm.storeArg(1, argcReg.reg());
         masm.storeArg(0, cxReg);
 
-        js::Native native = fun->u.n.native;
+        js::Native native = fun->native();
 
         /*
          * Call RegExp.test instead of exec if the result will not be used or
@@ -953,6 +923,8 @@ class CallCompiler : public BaseCompiler
         bool lowered = ic.frameSize.lowered(f.pc());
         JS_ASSERT_IF(lowered, !callingNew);
 
+        StackFrame *initialFp = f.fp();
+
         stubs::UncachedCallResult ucr;
         if (callingNew)
             stubs::UncachedNewHelper(f, ic.frameSize.staticArgc(), &ucr);
@@ -961,8 +933,9 @@ class CallCompiler : public BaseCompiler
 
         // Watch out in case the IC was invalidated by a recompilation on the calling
         // script. This can happen either if the callee is executed or if it compiles
-        // and the compilation has a static overflow.
-        if (monitor.recompiled())
+        // and the compilation has a static overflow. Also watch for cases where
+        // an exception is thrown and the callee frame hasn't unwound yet.
+        if (monitor.recompiled() || f.fp() != initialFp)
             return ucr.codeAddr;
 
         // If the function cannot be jitted (generally unjittable or empty script),
@@ -972,7 +945,7 @@ class CallCompiler : public BaseCompiler
                 disable();
             return NULL;
         }
-            
+
         JSFunction *fun = ucr.fun;
         JS_ASSERT(fun);
         JSScript *script = fun->script();
@@ -1010,6 +983,9 @@ class CallCompiler : public BaseCompiler
         return ucr.codeAddr;
     }
 };
+
+} // namespace mjit
+} // namespace js
 
 void * JS_FASTCALL
 ic::Call(VMFrame &f, CallICInfo *ic)
@@ -1062,66 +1038,28 @@ ic::SplatApplyArgs(VMFrame &f)
 {
     JSContext *cx = f.cx;
     JS_ASSERT(!f.regs.inlined());
-    JS_ASSERT(GET_ARGC(f.regs.pc) == 2);
 
-    /*
-     * The lazyArgsObj flag indicates an optimized call |f.apply(x, arguments)|
-     * where the args obj has not been created or pushed on the stack. Thus,
-     * if lazyArgsObj is set, the stack for |f.apply(x, arguments)| is:
-     *
-     *  | Function.prototype.apply | f | x |
-     *
-     * Otherwise, if !lazyArgsObj, the stack is a normal 2-argument apply:
-     *
-     *  | Function.prototype.apply | f | x | arguments |
-     */
-    if (f.u.call.lazyArgsObj) {
-        Value *vp = f.regs.sp - 3;
-        JS_ASSERT(JS_CALLEE(cx, vp).toObject().toFunction()->u.n.native == js_fun_apply);
+    CallArgs args = CallArgsFromSp(GET_ARGC(f.regs.pc), f.regs.sp);
+    JS_ASSERT(args.length() == 2);
+    JS_ASSERT(IsNativeFunction(args.calleev(), js_fun_apply));
 
-        StackFrame *fp = f.regs.fp();
-        unsigned n;
-        if (!fp->hasArgsObj()) {
-            /* Extract the common/fast path where there is no args obj. */
-            n = fp->numActualArgs();
-            if (!BumpStack(f, n))
-                THROWV(false);
-            Value *argv = JS_ARGV(cx, vp + 1 /* vp[1]'s argv */);
-            f.regs.sp += n;
-            fp->forEachCanonicalActualArg(CopyTo(argv));
-        } else {
-            /* Simulate the argument-pushing part of js_fun_apply: */
-            JSObject *aobj = &fp->argsObj();
+    if (args[1].isMagic(JS_OPTIMIZED_ARGUMENTS)) {
+        /* Mirror isMagic(JS_OPTIMIZED_ARGUMENTS) case in js_fun_apply. */
+        /* Steps 4-6. */
+        unsigned length = f.regs.fp()->numActualArgs();
+        JS_ASSERT(length <= StackSpace::ARGS_LENGTH_MAX);
 
-            /* Steps 4-5 */
-            unsigned length;
-            if (!js_GetLengthProperty(cx, aobj, &length))
-                THROWV(false);
+        f.regs.sp--;
+        if (!BumpStack(f, length))
+            THROWV(false);
 
-            /* Step 6. */
-            if (length > StackSpace::ARGS_LENGTH_MAX) {
-                JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL,
-                                     JSMSG_TOO_MANY_FUN_APPLY_ARGS);
-                THROWV(false);
-            }
+        /* Steps 7-8. */
+        f.regs.fp()->forEachCanonicalActualArg(CopyTo(f.regs.sp));
 
-            n = length;
-            if (!BumpStack(f, n))
-                THROWV(false);
-
-            /* Steps 7-8 */
-            Value *argv = JS_ARGV(cx, &vp[1]);  /* vp[1] is the callee */
-            f.regs.sp += n;  /* GetElements may reenter, so inc early. */
-            if (!GetElements(cx, aobj, n, argv))
-                THROWV(false);
-        }
-
-        f.u.call.dynamicArgc = n;
+        f.regs.sp += length;
+        f.u.call.dynamicArgc = length;
         return true;
     }
-
-    Value *vp = f.regs.sp - 4;
-    JS_ASSERT(JS_CALLEE(cx, vp).toObject().toFunction()->u.n.native == js_fun_apply);
 
     /*
      * This stub should mimic the steps taken by js_fun_apply. Step 1 and part
@@ -1129,20 +1067,20 @@ ic::SplatApplyArgs(VMFrame &f)
      */
 
     /* Step 2 (part 2). */
-    if (vp[3].isNullOrUndefined()) {
+    if (args[1].isNullOrUndefined()) {
         f.regs.sp--;
         f.u.call.dynamicArgc = 0;
         return true;
     }
 
     /* Step 3. */
-    if (!vp[3].isObject()) {
+    if (!args[1].isObject()) {
         JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL, JSMSG_BAD_APPLY_ARGS, js_apply_str);
         THROWV(false);
     }
 
     /* Steps 4-5. */
-    JSObject *aobj = &vp[3].toObject();
+    RootedObject aobj(cx, &args[1].toObject());
     uint32_t length;
     if (!js_GetLengthProperty(cx, aobj, &length))
         THROWV(false);

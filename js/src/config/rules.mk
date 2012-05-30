@@ -1,45 +1,10 @@
 # -*- makefile -*-
 # vim:set ts=8 sw=8 sts=8 noet:
 #
-# ***** BEGIN LICENSE BLOCK *****
-# Version: MPL 1.1/GPL 2.0/LGPL 2.1
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this file,
+# You can obtain one at http://mozilla.org/MPL/2.0/.
 #
-# The contents of this file are subject to the Mozilla Public License Version
-# 1.1 (the "License"); you may not use this file except in compliance with
-# the License. You may obtain a copy of the License at
-# http://www.mozilla.org/MPL/
-#
-# Software distributed under the License is distributed on an "AS IS" basis,
-# WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
-# for the specific language governing rights and limitations under the
-# License.
-#
-# The Original Code is mozilla.org code.
-#
-# The Initial Developer of the Original Code is
-# Netscape Communications Corporation.
-# Portions created by the Initial Developer are Copyright (C) 1998
-# the Initial Developer. All Rights Reserved.
-#
-# Contributor(s):
-#  Chase Phillips <chase@mozilla.org>
-#  Benjamin Smedberg <benjamin@smedbergs.us>
-#  Jeff Walden <jwalden+code@mit.edu>
-#  Joey Armstrong <joey@mozilla.com>
-#
-# Alternatively, the contents of this file may be used under the terms of
-# either of the GNU General Public License Version 2 or later (the "GPL"),
-# or the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
-# in which case the provisions of the GPL or the LGPL are applicable instead
-# of those above. If you wish to allow use of your version of this file only
-# under the terms of either the GPL or the LGPL, and not to allow others to
-# use your version of this file under the terms of the MPL, indicate your
-# decision by deleting the provisions above and replace them with the notice
-# and other provisions required by the GPL or the LGPL. If you do not delete
-# the provisions above, a recipient may use your version of this file under
-# the terms of any one of the MPL, the GPL or the LGPL.
-#
-# ***** END LICENSE BLOCK *****
 
 ifndef topsrcdir
 $(error topsrcdir was not set))
@@ -56,6 +21,9 @@ endif
 ifndef INCLUDED_VERSION_MK
 include $(topsrcdir)/config/version.mk
 endif
+
+USE_AUTOTARGETS_MK = 1
+include $(topsrcdir)/config/makefiles/makeutils.mk
 
 ifdef SDK_XPIDLSRCS
 XPIDLSRCS += $(SDK_XPIDLSRCS)
@@ -117,105 +85,9 @@ ifdef ENABLE_TESTS
 # locally against non-current test code.
 DIRS += $(TEST_DIRS)
 
-ifdef XPCSHELL_TESTS
-ifndef relativesrcdir
-$(error Must define relativesrcdir when defining XPCSHELL_TESTS.)
-endif
-
-define _INSTALL_TESTS
-$(DIR_INSTALL) $(wildcard $(srcdir)/$(dir)/*) $(testxpcobjdir)/$(relativesrcdir)/$(dir)
-
-endef # do not remove the blank line!
-
-SOLO_FILE ?= $(error Specify a test filename in SOLO_FILE when using check-interactive or check-one)
-
-libs::
-	$(foreach dir,$(XPCSHELL_TESTS),$(_INSTALL_TESTS))
-ifndef NO_XPCSHELL_MANIFEST_CHECK
-	$(PYTHON) $(MOZILLA_DIR)/build/xpccheck.py \
-	  $(topsrcdir) \
-	  $(topsrcdir)/testing/xpcshell/xpcshell.ini \
-	  $(addprefix $(MOZILLA_DIR)/$(relativesrcdir)/,$(XPCSHELL_TESTS))
-endif
-
-testxpcsrcdir = $(topsrcdir)/testing/xpcshell
-
-# Execute all tests in the $(XPCSHELL_TESTS) directories.
-# See also testsuite-targets.mk 'xpcshell-tests' target for global execution.
-xpcshell-tests:
-	$(PYTHON) -u $(topsrcdir)/config/pythonpath.py \
-	  -I$(topsrcdir)/build \
-	  $(testxpcsrcdir)/runxpcshelltests.py \
-	  --symbols-path=$(DIST)/crashreporter-symbols \
-	  --build-info-json=$(DEPTH)/mozinfo.json \
-	  --tests-root-dir=$(testxpcobjdir) \
-	  --xunit-file=$(testxpcobjdir)/$(relativesrcdir)/results.xml \
-	  --xunit-suite-name=xpcshell \
-	  $(EXTRA_TEST_ARGS) \
-	  $(LIBXUL_DIST)/bin/xpcshell \
-	  $(foreach dir,$(XPCSHELL_TESTS),$(testxpcobjdir)/$(relativesrcdir)/$(dir))
-
-xpcshell-tests-remote: DM_TRANS?=adb
-xpcshell-tests-remote:
-	$(PYTHON) -u $(topsrcdir)/config/pythonpath.py \
-	  -I$(topsrcdir)/build \
-	  -I$(topsrcdir)/build/mobile \
-	  $(topsrcdir)/testing/xpcshell/remotexpcshelltests.py \
-	  --symbols-path=$(DIST)/crashreporter-symbols \
-	  --build-info-json=$(DEPTH)/mozinfo.json \
-	  $(EXTRA_TEST_ARGS) \
-	  --dm_trans=$(DM_TRANS) \
-	  --deviceIP=${TEST_DEVICE} \
-	  --objdir=$(DEPTH) \
-	  $(foreach dir,$(XPCSHELL_TESTS),$(testxpcobjdir)/$(relativesrcdir)/$(dir))
-
-# Execute a single test, specified in $(SOLO_FILE), but don't automatically
-# start the test. Instead, present the xpcshell prompt so the user can
-# attach a debugger and then start the test.
-check-interactive:
-	$(PYTHON) -u $(topsrcdir)/config/pythonpath.py \
-	  -I$(topsrcdir)/build \
-	  $(testxpcsrcdir)/runxpcshelltests.py \
-	  --symbols-path=$(DIST)/crashreporter-symbols \
-	  --build-info-json=$(DEPTH)/mozinfo.json \
-	  --test-path=$(SOLO_FILE) \
-	  --profile-name=$(MOZ_APP_NAME) \
-	  --interactive \
-	  $(LIBXUL_DIST)/bin/xpcshell \
-	  $(foreach dir,$(XPCSHELL_TESTS),$(testxpcobjdir)/$(relativesrcdir)/$(dir))
-
-# Execute a single test, specified in $(SOLO_FILE)
-check-one:
-	$(PYTHON) -u $(topsrcdir)/config/pythonpath.py \
-	  -I$(topsrcdir)/build \
-	  $(testxpcsrcdir)/runxpcshelltests.py \
-	  --symbols-path=$(DIST)/crashreporter-symbols \
-	  --build-info-json=$(DEPTH)/mozinfo.json \
-	  --test-path=$(SOLO_FILE) \
-	  --profile-name=$(MOZ_APP_NAME) \
-	  --verbose \
-	  $(EXTRA_TEST_ARGS) \
-	  $(LIBXUL_DIST)/bin/xpcshell \
-	  $(foreach dir,$(XPCSHELL_TESTS),$(testxpcobjdir)/$(relativesrcdir)/$(dir))
-
-check-one-remote: DM_TRANS?=adb
-check-one-remote:
-	$(PYTHON) -u $(topsrcdir)/config/pythonpath.py \
-	  -I$(topsrcdir)/build \
-	  -I$(topsrcdir)/build/mobile \
-	  $(testxpcsrcdir)/remotexpcshelltests.py \
-	  --symbols-path=$(DIST)/crashreporter-symbols \
-	  --build-info-json=$(DEPTH)/mozinfo.json \
-	  --test-path=$(SOLO_FILE) \
-	  --profile-name=$(MOZ_APP_NAME) \
-	  --verbose \
-	  $(EXTRA_TEST_ARGS) \
-	  --dm_trans=$(DM_TRANS) \
-	  --deviceIP=${TEST_DEVICE} \
-	  --objdir=$(DEPTH) \
-          --noSetup \
-	  $(foreach dir,$(XPCSHELL_TESTS),$(testxpcobjdir)/$(relativesrcdir)/$(dir))
-endif # XPCSHELL_TESTS
+ifndef INCLUDED_TESTS_XPCSHELL_MK #{
+  include $(topsrcdir)/config/makefiles/xpcshell.mk
+endif #}
 
 ifdef CPP_UNIT_TESTS
 
@@ -236,7 +108,7 @@ check::
 
 endif # CPP_UNIT_TESTS
 
-.PHONY: check xpcshell-tests check-interactive check-one
+.PHONY: check
 
 endif # ENABLE_TESTS
 
@@ -390,30 +262,27 @@ ifndef TARGETS
 TARGETS			= $(LIBRARY) $(SHARED_LIBRARY) $(PROGRAM) $(SIMPLE_PROGRAMS) $(HOST_LIBRARY) $(HOST_PROGRAM) $(HOST_SIMPLE_PROGRAMS) $(JAVA_LIBRARY)
 endif
 
+COBJS = $(CSRCS:.c=.$(OBJ_SUFFIX))
+SOBJS = $(SSRCS:.S=.$(OBJ_SUFFIX))
+CCOBJS = $(patsubst %.cc,%.$(OBJ_SUFFIX),$(filter %.cc,$(CPPSRCS)))
+CPPOBJS = $(patsubst %.cpp,%.$(OBJ_SUFFIX),$(filter %.cpp,$(CPPSRCS)))
+CMOBJS = $(CMSRCS:.m=.$(OBJ_SUFFIX))
+CMMOBJS = $(CMMSRCS:.mm=.$(OBJ_SUFFIX))
+ASOBJS = $(ASFILES:.$(ASM_SUFFIX)=.$(OBJ_SUFFIX))
 ifndef OBJS
-_OBJS			= \
-	$(JRI_STUB_CFILES) \
-	$(addsuffix .$(OBJ_SUFFIX), $(JMC_GEN)) \
-	$(CSRCS:.c=.$(OBJ_SUFFIX)) \
-	$(SSRCS:.S=.$(OBJ_SUFFIX)) \
-	$(patsubst %.cc,%.$(OBJ_SUFFIX),$(CPPSRCS:.cpp=.$(OBJ_SUFFIX))) \
-	$(CMSRCS:.m=.$(OBJ_SUFFIX)) \
-	$(CMMSRCS:.mm=.$(OBJ_SUFFIX)) \
-	$(ASFILES:.$(ASM_SUFFIX)=.$(OBJ_SUFFIX))
-OBJS	= $(strip $(_OBJS))
+_OBJS = $(COBJS) $(SOBJS) $(CCOBJS) $(CPPOBJS) $(CMOBJS) $(CMMOBJS) $(ASOBJS)
+OBJS = $(strip $(_OBJS))
 endif
 
+HOST_COBJS = $(addprefix host_,$(HOST_CSRCS:.c=.$(OBJ_SUFFIX)))
+HOST_CCOBJS = $(addprefix host_,$(patsubst %.cc,%.$(OBJ_SUFFIX),$(filter %.cc,$(HOST_CPPSRCS))))
+HOST_CPPOBJS = $(addprefix host_,$(patsubst %.cpp,%.$(OBJ_SUFFIX),$(filter %.cpp,$(HOST_CPPSRCS))))
+HOST_CMOBJS = $(addprefix host_,$(HOST_CMSRCS:.m=.$(OBJ_SUFFIX)))
+HOST_CMMOBJS = $(addprefix host_,$(HOST_CMMSRCS:.mm=.$(OBJ_SUFFIX)))
 ifndef HOST_OBJS
-_HOST_OBJS		= \
-        $(addprefix host_,$(HOST_CSRCS:.c=.$(OBJ_SUFFIX))) \
-	$(addprefix host_,$(patsubst %.cc,%.$(OBJ_SUFFIX),$(HOST_CPPSRCS:.cpp=.$(OBJ_SUFFIX)))) \
-	$(addprefix host_,$(HOST_CMSRCS:.m=.$(OBJ_SUFFIX))) \
-	$(addprefix host_,$(HOST_CMMSRCS:.mm=.$(OBJ_SUFFIX)))
+_HOST_OBJS = $(HOST_COBJS) $(HOST_CCOBJS) $(HOST_CPPOBJS) $(HOST_CMOBJS) $(HOST_CMMOBJS)
 HOST_OBJS = $(strip $(_HOST_OBJS))
 endif
-
-LIBOBJS			:= $(addprefix \", $(OBJS))
-LIBOBJS			:= $(addsuffix \", $(LIBOBJS))
 
 ifndef MOZ_AUTO_DEPS
 ifneq (,$(OBJS)$(XPIDLSRCS)$(SIMPLE_PROGRAMS))
@@ -512,8 +381,8 @@ endif
 # A Makefile that needs $(MDDEPDIR) created but doesn't set any of these
 # variables we know to check can just set NEED_MDDEPDIR explicitly.
 ifneq (,$(OBJS)$(XPIDLSRCS)$(SIMPLE_PROGRAMS)$(NEED_MDDEPDIR))
-MAKE_DIRS		+= $(CURDIR)/$(MDDEPDIR)
-GARBAGE_DIRS		+= $(MDDEPDIR)
+MAKE_DIRS       += $(CURDIR)/$(MDDEPDIR)
+GARBAGE_DIRS    += $(CURDIR)/$(MDDEPDIR)
 endif
 
 #
@@ -527,9 +396,6 @@ TAG_PROGRAM		= xargs etags -a
 # (moved this from config.mk so that config.mk can be included
 #  before the CPPSRCS are defined)
 #
-ifneq ($(CPPSRCS)$(CMMSRCS),)
-CPP_PROG_LINK		= 1
-endif
 ifneq ($(HOST_CPPSRCS)$(HOST_CMMSRCS),)
 HOST_CPP_PROG_LINK	= 1
 endif
@@ -778,11 +644,23 @@ $(error SHARED_LIBRARY_LIBS must contain .$(LIB_SUFFIX) files only)
 endif
 
 # Create dependencies on static (and shared EXTRA_DSO_LIBS) libraries
-DO_EXPAND_LIBS = $(foreach f,$(1),$(if $(filter %.$(LIB_SUFFIX),$(f)),$(if $(wildcard $(f).$(LIBS_DESC_SUFFIX)),$(f).$(LIBS_DESC_SUFFIX),$(if $(wildcard $(f)),$(f)))))
-LIBS_DEPS = $(call DO_EXPAND_LIBS,$(filter %.$(LIB_SUFFIX),$(LIBS) $(if $(PROGRAM)$(SIMPLE_PROGRAMS),$(MOZ_GLUE_PROGRAM_LDFLAGS))))
-SHARED_LIBRARY_LIBS_DEPS = $(call DO_EXPAND_LIBS,$(SHARED_LIBRARY_LIBS))
+ifneq (,$(strip $(filter %.$(LIB_SUFFIX),$(LIBS) $(EXTRA_DSO_LDOPTS)) $(SHARED_LIBRARY_LIBS) $(EXTRA_DSO_LIBS)))
+$(MDDEPDIR)/libs: Makefile.in
+	@mkdir -p $(MDDEPDIR)
+	@$(EXPAND_LIBS_DEPS) LIBS_DEPS = $(filter %.$(LIB_SUFFIX),$(LIBS)) , \
+	                     SHARED_LIBRARY_LIBS_DEPS = $(SHARED_LIBRARY_LIBS) , \
+	                     DSO_LDOPTS_DEPS = $(EXTRA_DSO_LIBS) $(filter %.$(LIB_SUFFIX), $(EXTRA_DSO_LDOPTS)) > $@
+
+ifneq (,$(wildcard $(MDDEPDIR)/libs))
+include $(MDDEPDIR)/libs
+endif
+
+$(MDDEPDIR)/libs: $(wildcard $(filter %.$(LIBS_DESC_SUFFIX),$(LIBS_DEPS) $(SHARED_LIBRARY_LIBS_DEPS) $(DSO_LDOPTS_DEPS)))
+
+EXTRA_DEPS += $(MDDEPDIR)/libs
+endif
+
 HOST_LIBS_DEPS = $(filter %.$(LIB_SUFFIX),$(HOST_LIBS))
-DSO_LDOPTS_DEPS = $(call DO_EXPAND_LIBS,$(EXTRA_DSO_LIBS) $(filter %.$(LIB_SUFFIX), $(EXTRA_DSO_LDOPTS)))
 
 # Dependencies which, if modified, should cause everything to rebuild
 GLOBAL_DEPS += Makefile Makefile.in $(DEPTH)/config/autoconf.mk $(topsrcdir)/config/config.mk
@@ -846,9 +724,6 @@ endif # NO_PROFILE_GUIDED_OPTIMIZE
 
 ##############################################
 
-stdc++compat.$(OBJ_SUFFIX): CXXFLAGS+=-DMOZ_LIBSTDCXX_VERSION=$(MOZ_LIBSTDCXX_TARGET_VERSION)
-host_stdc++compat.$(OBJ_SUFFIX): CXXFLAGS+=-DMOZ_LIBSTDCXX_VERSION=$(MOZ_LIBSTDCXX_HOST_VERSION)
-
 checkout:
 	$(MAKE) -C $(topsrcdir) -f client.mk checkout
 
@@ -901,12 +776,8 @@ ifdef MOZ_PROFILE_GENERATE
 	touch -t `date +%Y%m%d%H%M.%S -d "now+5seconds"` pgo.relink
 endif
 else # !WINNT || GNU_CC
-ifeq ($(CPP_PROG_LINK),1)
 	$(EXPAND_CCC) -o $@ $(CXXFLAGS) $(PROGOBJS) $(RESFILE) $(WIN32_EXE_LDFLAGS) $(LDFLAGS) $(WRAP_LDFLAGS) $(LIBS_DIR) $(LIBS) $(MOZ_GLUE_PROGRAM_LDFLAGS) $(OS_LIBS) $(EXTRA_LIBS) $(BIN_FLAGS) $(EXE_DEF_FILE)
 	@$(call CHECK_STDCXX,$@)
-else # ! CPP_PROG_LINK
-	$(EXPAND_CC) -o $@ $(CFLAGS) $(PROGOBJS) $(RESFILE) $(WIN32_EXE_LDFLAGS) $(LDFLAGS) $(WRAP_LDFLAGS) $(LIBS_DIR) $(LIBS) $(MOZ_GLUE_PROGRAM_LDFLAGS) $(OS_LIBS) $(EXTRA_LIBS) $(BIN_FLAGS) $(EXE_DEF_FILE)
-endif # CPP_PROG_LINK
 endif # WINNT && !GNU_CC
 
 ifdef ENABLE_STRIP
@@ -959,12 +830,8 @@ ifdef MSMANIFEST_TOOL
 	fi
 endif	# MSVC with manifest tool
 else
-ifeq ($(CPP_PROG_LINK),1)
 	$(EXPAND_CCC) $(CXXFLAGS) -o $@ $< $(WIN32_EXE_LDFLAGS) $(LDFLAGS) $(WRAP_LDFLAGS) $(LIBS_DIR) $(LIBS) $(MOZ_GLUE_PROGRAM_LDFLAGS) $(OS_LIBS) $(EXTRA_LIBS) $(BIN_FLAGS)
 	@$(call CHECK_STDCXX,$@)
-else
-	$(EXPAND_CC) $(CFLAGS) $(OUTOPTION)$@ $< $(WIN32_EXE_LDFLAGS) $(LDFLAGS) $(WRAP_LDFLAGS) $(LIBS_DIR) $(LIBS) $(MOZ_GLUE_PROGRAM_LDFLAGS) $(OS_LIBS) $(EXTRA_LIBS) $(BIN_FLAGS)
-endif # CPP_PROG_LINK
 endif # WINNT && !GNU_CC
 
 ifdef ENABLE_STRIP
@@ -983,31 +850,6 @@ ifneq (,$(HOST_CPPSRCS)$(USE_HOST_CXX))
 else
 	$(HOST_CC) $(HOST_OUTOPTION)$@ $(HOST_CFLAGS) $(INCLUDES) $< $(HOST_LIBS) $(HOST_EXTRA_LIBS)
 endif
-endif
-
-#
-# Purify target.  Solaris/sparc only to start.
-# Purify does not recognize "egcs" or "c++" so we go with
-# "gcc" and "g++" for now.
-#
-pure:	$(PROGRAM)
-ifeq ($(CPP_PROG_LINK),1)
-	$(PURIFY) $(CCC) -o $^.pure $(CXXFLAGS) $(PROGOBJS) $(LDFLAGS) $(LIBS_DIR) $(LIBS) $(OS_LIBS) $(EXTRA_LIBS)
-else
-	$(PURIFY) $(CC) -o $^.pure $(CFLAGS) $(PROGOBJS) $(LDFLAGS) $(LIBS_DIR) $(LIBS) $(OS_LIBS) $(EXTRA_LIBS)
-endif
-ifndef NO_DIST_INSTALL
-	$(INSTALL) $(IFLAGS2) $^.pure $(FINAL_TARGET)
-endif
-
-quantify: $(PROGRAM)
-ifeq ($(CPP_PROG_LINK),1)
-	$(QUANTIFY) $(CCC) -o $^.quantify $(CXXFLAGS) $(PROGOBJS) $(LDFLAGS) $(LIBS_DIR) $(LIBS) $(OS_LIBS) $(EXTRA_LIBS)
-else
-	$(QUANTIFY) $(CC) -o $^.quantify $(CFLAGS) $(PROGOBJS) $(LDFLAGS) $(LIBS_DIR) $(LIBS) $(OS_LIBS) $(EXTRA_LIBS)
-endif
-ifndef NO_DIST_INSTALL
-	$(INSTALL) $(IFLAGS2) $^.quantify $(FINAL_TARGET)
 endif
 
 ifdef DTRACE_PROBE_OBJ
@@ -1143,33 +985,30 @@ endif # COMPILER_DEPEND
 
 endif # MOZ_AUTO_DEPS
 
+$(OBJS) $(HOST_OBJS): $(GLOBAL_DEPS)
+
 # Rules for building native targets must come first because of the host_ prefix
-host_%.$(OBJ_SUFFIX): %.c $(GLOBAL_DEPS)
+$(HOST_COBJS): host_%.$(OBJ_SUFFIX): %.c
 	$(REPORT_BUILD)
 	$(ELOG) $(HOST_CC) $(HOST_OUTOPTION)$@ -c $(HOST_CFLAGS) $(INCLUDES) $(NSPR_CFLAGS) $(_VPATH_SRCS)
 
-host_%.$(OBJ_SUFFIX): %.cpp $(GLOBAL_DEPS)
+$(HOST_CPPOBJS): host_%.$(OBJ_SUFFIX): %.cpp
 	$(REPORT_BUILD)
 	$(ELOG) $(HOST_CXX) $(HOST_OUTOPTION)$@ -c $(HOST_CXXFLAGS) $(INCLUDES) $(NSPR_CFLAGS) $(_VPATH_SRCS)
 
-host_%.$(OBJ_SUFFIX): %.cc $(GLOBAL_DEPS)
+$(HOST_CCOBJS): host_%.$(OBJ_SUFFIX): %.cc
 	$(REPORT_BUILD)
 	$(ELOG) $(HOST_CXX) $(HOST_OUTOPTION)$@ -c $(HOST_CXXFLAGS) $(INCLUDES) $(NSPR_CFLAGS) $(_VPATH_SRCS)
 
-host_%.$(OBJ_SUFFIX): %.m $(GLOBAL_DEPS)
+$(HOST_CMOBJS): host_%.$(OBJ_SUFFIX): %.m
 	$(REPORT_BUILD)
 	$(ELOG) $(HOST_CC) $(HOST_OUTOPTION)$@ -c $(HOST_CFLAGS) $(HOST_CMFLAGS) $(INCLUDES) $(NSPR_CFLAGS) $(_VPATH_SRCS)
 
-host_%.$(OBJ_SUFFIX): %.mm $(GLOBAL_DEPS)
+$(HOST_CMMOBJS): host_%.$(OBJ_SUFFIX): %.mm
 	$(REPORT_BUILD)
 	$(ELOG) $(HOST_CXX) $(HOST_OUTOPTION)$@ -c $(HOST_CXXFLAGS) $(HOST_CMMFLAGS) $(INCLUDES) $(NSPR_CFLAGS) $(_VPATH_SRCS)
 
-%:: %.c $(GLOBAL_DEPS)
-	$(REPORT_BUILD)
-	@$(MAKE_DEPS_AUTO_CC)
-	$(ELOG) $(CC) $(CFLAGS) $(LDFLAGS) $(OUTOPTION)$@ $(_VPATH_SRCS)
-
-%.$(OBJ_SUFFIX): %.c $(GLOBAL_DEPS)
+$(COBJS): %.$(OBJ_SUFFIX): %.c
 	$(REPORT_BUILD)
 	@$(MAKE_DEPS_AUTO_CC)
 	$(ELOG) $(CC) $(OUTOPTION)$@ -c $(COMPILE_CFLAGS) $(_VPATH_SRCS)
@@ -1177,38 +1016,34 @@ host_%.$(OBJ_SUFFIX): %.mm $(GLOBAL_DEPS)
 # DEFINES and ACDEFINES are needed here to enable conditional compilation of Q_OBJECTs:
 # 'moc' only knows about #defines it gets on the command line (-D...), not in
 # included headers like mozilla-config.h
-moc_%.cpp: %.h $(GLOBAL_DEPS)
+moc_%.cpp: %.h
 	$(ELOG) $(MOC) $(DEFINES) $(ACDEFINES) $< $(OUTOPTION)$@
 
-moc_%.cc: %.cc $(GLOBAL_DEPS)
+moc_%.cc: %.cc
 	$(ELOG) $(MOC) $(DEFINES) $(ACDEFINES) $(_VPATH_SRCS:.cc=.h) $(OUTOPTION)$@
 
-qrc_%.cpp: %.qrc $(GLOBAL_DEPS)
+qrc_%.cpp: %.qrc
 	$(ELOG) $(RCC) -name $* $< $(OUTOPTION)$@
 
 ifdef ASFILES
 # The AS_DASH_C_FLAG is needed cause not all assemblers (Solaris) accept
 # a '-c' flag.
-%.$(OBJ_SUFFIX): %.$(ASM_SUFFIX) $(GLOBAL_DEPS)
+$(ASOBJS): %.$(OBJ_SUFFIX): %.$(ASM_SUFFIX)
 	$(AS) $(ASOUTOPTION)$@ $(ASFLAGS) $(AS_DASH_C_FLAG) $(_VPATH_SRCS)
 endif
 
-%.$(OBJ_SUFFIX): %.S $(GLOBAL_DEPS)
+$(SOBJS): %.$(OBJ_SUFFIX): %.S
 	$(AS) -o $@ $(ASFLAGS) -c $<
-
-%:: %.cpp $(GLOBAL_DEPS)
-	@$(MAKE_DEPS_AUTO_CXX)
-	$(CCC) $(OUTOPTION)$@ $(CXXFLAGS) $(_VPATH_SRCS) $(LDFLAGS)
 
 #
 # Please keep the next two rules in sync.
 #
-%.$(OBJ_SUFFIX): %.cc $(GLOBAL_DEPS)
+$(CCOBJS): %.$(OBJ_SUFFIX): %.cc
 	$(REPORT_BUILD)
 	@$(MAKE_DEPS_AUTO_CXX)
 	$(ELOG) $(CCC) $(OUTOPTION)$@ -c $(COMPILE_CXXFLAGS) $(_VPATH_SRCS)
 
-%.$(OBJ_SUFFIX): %.cpp $(GLOBAL_DEPS)
+$(CPPOBJS): %.$(OBJ_SUFFIX): %.cpp
 	$(REPORT_BUILD)
 	@$(MAKE_DEPS_AUTO_CXX)
 ifdef STRICT_CPLUSPLUS_SUFFIX
@@ -1219,12 +1054,12 @@ else
 	$(ELOG) $(CCC) $(OUTOPTION)$@ -c $(COMPILE_CXXFLAGS) $(_VPATH_SRCS)
 endif #STRICT_CPLUSPLUS_SUFFIX
 
-$(OBJ_PREFIX)%.$(OBJ_SUFFIX): %.mm $(GLOBAL_DEPS)
+$(CMMOBJS): $(OBJ_PREFIX)%.$(OBJ_SUFFIX): %.mm
 	$(REPORT_BUILD)
 	@$(MAKE_DEPS_AUTO_CXX)
 	$(ELOG) $(CCC) -o $@ -c $(COMPILE_CXXFLAGS) $(COMPILE_CMMFLAGS) $(_VPATH_SRCS)
 
-$(OBJ_PREFIX)%.$(OBJ_SUFFIX): %.m $(GLOBAL_DEPS)
+$(CMOBJS): $(OBJ_PREFIX)%.$(OBJ_SUFFIX): %.m
 	$(REPORT_BUILD)
 	@$(MAKE_DEPS_AUTO_CC)
 	$(ELOG) $(CC) -o $@ -c $(COMPILE_CFLAGS) $(COMPILE_CMFLAGS) $(_VPATH_SRCS)
@@ -1397,7 +1232,7 @@ $(foreach namespace,$(EXPORTS_NAMESPACES),$(eval $(EXPORT_NAMESPACE_RULE)))
 ifdef GRE_MODULE
 PREF_DIR = greprefs
 else
-ifneq (,$(XPI_NAME)$(LIBXUL_SDK))
+ifneq (,$(XPI_NAME)$(LIBXUL_SDK)$(MOZ_PHOENIX))
 PREF_DIR = defaults/preferences
 else
 PREF_DIR = defaults/pref
@@ -1438,6 +1273,7 @@ export:: $(AUTOCFG_JS_EXPORTS) $(FINAL_TARGET)/defaults/autoconfig
 endif
 
 endif
+
 ################################################################################
 # Export the elements of $(XPIDLSRCS)
 # generating .h and .xpt files and moving them to the appropriate places.
@@ -1461,38 +1297,35 @@ endif
 
 # generate .h files from into $(XPIDL_GEN_DIR), then export to $(DIST)/include;
 # warn against overriding existing .h file.
-$(XPIDL_GEN_DIR)/.done:
-	$(MKDIR) -p $(XPIDL_GEN_DIR)
-	@$(TOUCH) $@
-
-# don't depend on $(XPIDL_GEN_DIR), because the modification date changes
-# with any addition to the directory, regenerating all .h files -> everything.
 
 XPIDL_DEPS = \
-  $(topsrcdir)/xpcom/idl-parser/header.py \
-  $(topsrcdir)/xpcom/idl-parser/typelib.py \
-  $(topsrcdir)/xpcom/idl-parser/xpidl.py \
+  $(LIBXUL_DIST)/sdk/bin/header.py \
+  $(LIBXUL_DIST)/sdk/bin/typelib.py \
+  $(LIBXUL_DIST)/sdk/bin/xpidl.py \
   $(NULL)
 
-$(XPIDL_GEN_DIR)/%.h: %.idl $(XPIDL_DEPS) $(XPIDL_GEN_DIR)/.done
+xpidl-preqs = \
+  $(call mkdir_deps,$(XPIDL_GEN_DIR)) \
+  $(call mkdir_deps,$(MDDEPDIR)) \
+  $(NULL)
+
+$(XPIDL_GEN_DIR)/%.h: %.idl $(XPIDL_DEPS) $(xpidl-preqs)
 	$(REPORT_BUILD)
 	$(PYTHON_PATH) \
-	  -I$(topsrcdir)/other-licenses/ply \
-	  -I$(topsrcdir)/xpcom/idl-parser \
-	  $(topsrcdir)/xpcom/idl-parser/header.py --cachedir=$(DEPTH)/xpcom/idl-parser $(XPIDL_FLAGS) $(_VPATH_SRCS) -d $(MDDEPDIR)/$(@F).pp -o $@
+	  $(PLY_INCLUDE) \
+	  $(LIBXUL_DIST)/sdk/bin/header.py $(XPIDL_FLAGS) $(_VPATH_SRCS) -d $(MDDEPDIR)/$(@F).pp -o $@
 	@if test -n "$(findstring $*.h, $(EXPORTS))"; \
 	  then echo "*** WARNING: file $*.h generated from $*.idl overrides $(srcdir)/$*.h"; else true; fi
 
 ifndef NO_GEN_XPT
 # generate intermediate .xpt files into $(XPIDL_GEN_DIR), then link
 # into $(XPIDL_MODULE).xpt and export it to $(FINAL_TARGET)/components.
-$(XPIDL_GEN_DIR)/%.xpt: %.idl $(XPIDL_DEPS) $(XPIDL_GEN_DIR)/.done
+$(XPIDL_GEN_DIR)/%.xpt: %.idl $(XPIDL_DEPS) $(xpidl-preqs)
 	$(REPORT_BUILD)
 	$(PYTHON_PATH) \
-	  -I$(topsrcdir)/other-licenses/ply \
-	  -I$(topsrcdir)/xpcom/idl-parser \
+	  $(PLY_INCLUDE) \
 	  -I$(topsrcdir)/xpcom/typelib/xpt/tools \
-	  $(topsrcdir)/xpcom/idl-parser/typelib.py --cachedir=$(DEPTH)/xpcom/idl-parser $(XPIDL_FLAGS) $(_VPATH_SRCS) -d $(MDDEPDIR)/$(@F).pp -o $@
+	  $(LIBXUL_DIST)/sdk/bin/typelib.py $(XPIDL_FLAGS) $(_VPATH_SRCS) -d $(MDDEPDIR)/$(@F).pp -o $@
 
 # no need to link together if XPIDLSRCS contains only XPIDL_MODULE
 ifneq ($(XPIDL_MODULE).idl,$(strip $(XPIDLSRCS)))
@@ -1608,6 +1441,25 @@ endif
 endif
 
 ################################################################################
+# Copy testing-only JS modules to appropriate destination.
+#
+# For each file defined in TESTING_JS_MODULES, copy it to
+# objdir/_tests/modules/. If TESTING_JS_MODULE_DIR is defined, that path
+# wlll be appended to the output directory.
+
+ifdef TESTING_JS_MODULES
+testmodulesdir = $(DEPTH)/_tests/modules/$(TESTING_JS_MODULE_DIR)
+
+GENERATED_DIRS += $(testmodulesdir)
+
+libs:: $(TESTING_JS_MODULES)
+ifndef NO_DIST_INSTALL
+	$(INSTALL) $(IFLAGS) $^ $(testmodulesdir)
+endif
+
+endif
+
+################################################################################
 # SDK
 
 ifneq (,$(SDK_LIBRARY))
@@ -1643,8 +1495,7 @@ chrome::
 	$(LOOP_OVER_DIRS)
 	$(LOOP_OVER_TOOL_DIRS)
 
-$(FINAL_TARGET)/chrome:
-	$(NSINSTALL) -D $@
+$(FINAL_TARGET)/chrome: $(call mkdir_deps,$(FINAL_TARGET)/chrome)
 
 ifneq (,$(wildcard $(JAR_MANIFEST)))
 ifndef NO_DIST_INSTALL
@@ -1896,106 +1747,12 @@ TAGS: $(SUBMAKEFILES) $(CSRCS) $(CPPSRCS) $(wildcard *.h)
 	$(LOOP_OVER_PARALLEL_DIRS)
 	$(LOOP_OVER_DIRS)
 
-echo-variable-%:
-	@echo "$($*)"
-
-echo-tiers:
-	@echo $(TIERS)
-
-echo-tier-dirs:
-	@$(foreach tier,$(TIERS),echo '$(tier):'; echo '  dirs: $(tier_$(tier)_dirs)'; echo '  staticdirs: $(tier_$(tier)_staticdirs)'; )
-
-echo-dirs:
-	@echo $(DIRS)
-
-echo-module:
-	@echo $(MODULE)
-
-echo-depth-path:
-	@$(topsrcdir)/build/unix/print-depth-path.sh
-
-echo-module-name:
-	@$(topsrcdir)/build/package/rpm/print-module-name.sh
-
-echo-module-filelist:
-	@$(topsrcdir)/build/package/rpm/print-module-filelist.sh
-
-showtargs:
-ifneq (,$(filter $(PROGRAM) $(HOST_PROGRAM) $(SIMPLE_PROGRAMS) $(HOST_LIBRARY) $(LIBRARY) $(SHARED_LIBRARY),$(TARGETS)))
-	@echo --------------------------------------------------------------------------------
-	@echo "PROGRAM             = $(PROGRAM)"
-	@echo "SIMPLE_PROGRAMS     = $(SIMPLE_PROGRAMS)"
-	@echo "LIBRARY             = $(LIBRARY)"
-	@echo "SHARED_LIBRARY      = $(SHARED_LIBRARY)"
-	@echo "SHARED_LIBRARY_LIBS = $(SHARED_LIBRARY_LIBS)"
-	@echo "LIBS                = $(LIBS)"
-	@echo "DEF_FILE            = $(DEF_FILE)"
-	@echo "IMPORT_LIBRARY      = $(IMPORT_LIBRARY)"
-	@echo "STATIC_LIBS         = $(STATIC_LIBS)"
-	@echo "SHARED_LIBS         = $(SHARED_LIBS)"
-	@echo "EXTRA_DSO_LIBS      = $(EXTRA_DSO_LIBS)"
-	@echo "EXTRA_DSO_LDOPTS    = $(EXTRA_DSO_LDOPTS)"
-	@echo "DEPENDENT_LIBS      = $(DEPENDENT_LIBS)"
-	@echo --------------------------------------------------------------------------------
-endif
-	$(LOOP_OVER_PARALLEL_DIRS)
-	$(LOOP_OVER_DIRS)
-
-showbuild:
-	@echo "MOZ_BUILD_ROOT     = $(MOZ_BUILD_ROOT)"
-	@echo "MOZ_WIDGET_TOOLKIT = $(MOZ_WIDGET_TOOLKIT)"
-	@echo "CC                 = $(CC)"
-	@echo "CXX                = $(CXX)"
-	@echo "CCC                = $(CCC)"
-	@echo "CPP                = $(CPP)"
-	@echo "LD                 = $(LD)"
-	@echo "AR                 = $(AR)"
-	@echo "IMPLIB             = $(IMPLIB)"
-	@echo "FILTER             = $(FILTER)"
-	@echo "MKSHLIB            = $(MKSHLIB)"
-	@echo "MKCSHLIB           = $(MKCSHLIB)"
-	@echo "RC                 = $(RC)"
-	@echo "MC                 = $(MC)"
-	@echo "CFLAGS             = $(CFLAGS)"
-	@echo "OS_CFLAGS          = $(OS_CFLAGS)"
-	@echo "COMPILE_CFLAGS     = $(COMPILE_CFLAGS)"
-	@echo "CXXFLAGS           = $(CXXFLAGS)"
-	@echo "OS_CXXFLAGS        = $(OS_CXXFLAGS)"
-	@echo "COMPILE_CXXFLAGS   = $(COMPILE_CXXFLAGS)"
-	@echo "COMPILE_CMFLAGS    = $(COMPILE_CMFLAGS)"
-	@echo "COMPILE_CMMFLAGS   = $(COMPILE_CMMFLAGS)"
-	@echo "LDFLAGS            = $(LDFLAGS)"
-	@echo "OS_LDFLAGS         = $(OS_LDFLAGS)"
-	@echo "DSO_LDOPTS         = $(DSO_LDOPTS)"
-	@echo "OS_INCLUDES        = $(OS_INCLUDES)"
-	@echo "OS_LIBS            = $(OS_LIBS)"
-	@echo "EXTRA_LIBS         = $(EXTRA_LIBS)"
-	@echo "BIN_FLAGS          = $(BIN_FLAGS)"
-	@echo "INCLUDES           = $(INCLUDES)"
-	@echo "DEFINES            = $(DEFINES)"
-	@echo "ACDEFINES          = $(ACDEFINES)"
-	@echo "BIN_SUFFIX         = $(BIN_SUFFIX)"
-	@echo "LIB_SUFFIX         = $(LIB_SUFFIX)"
-	@echo "DLL_SUFFIX         = $(DLL_SUFFIX)"
-	@echo "IMPORT_LIB_SUFFIX  = $(IMPORT_LIB_SUFFIX)"
-	@echo "INSTALL            = $(INSTALL)"
-	@echo "VPATH              = $(VPATH)"
-
-showhost:
-	@echo "HOST_CC            = $(HOST_CC)"
-	@echo "HOST_CXX           = $(HOST_CXX)"
-	@echo "HOST_CFLAGS        = $(HOST_CFLAGS)"
-	@echo "HOST_LDFLAGS       = $(HOST_LDFLAGS)"
-	@echo "HOST_LIBS          = $(HOST_LIBS)"
-	@echo "HOST_EXTRA_LIBS    = $(HOST_EXTRA_LIBS)"
-	@echo "HOST_EXTRA_DEPS    = $(HOST_EXTRA_DEPS)"
-	@echo "HOST_PROGRAM       = $(HOST_PROGRAM)"
-	@echo "HOST_OBJS          = $(HOST_OBJS)"
-	@echo "HOST_PROGOBJS      = $(HOST_PROGOBJS)"
-	@echo "HOST_LIBRARY       = $(HOST_LIBRARY)"
-
-showbuildmods::
-	@echo "Module dirs	= $(BUILD_MODULE_DIRS)"
+ifndef INCLUDED_DEBUGMAKE_MK #{
+  ## Only parse when an echo* or show* target is requested
+  ifneq (,$(call isTargetStem,echo,show))
+    include $(topsrcdir)/config/makefiles/debugmake.mk
+  endif #}
+endif #}
 
 documentation:
 	@cd $(DEPTH)
@@ -2028,8 +1785,18 @@ $(foreach var,$(FREEZE_VARIABLES),$(eval $(var)_FROZEN := '$($(var))'))
 CHECK_FROZEN_VARIABLES = $(foreach var,$(FREEZE_VARIABLES), \
   $(if $(subst $($(var)_FROZEN),,'$($(var))'),$(error Makefile variable '$(var)' changed value after including rules.mk. Was $($(var)_FROZEN), now $($(var)).)))
 
-libs export libs::
+libs export::
 	$(CHECK_FROZEN_VARIABLES)
 
 default all::
 	if test -d $(DIST)/bin ; then touch $(DIST)/bin/.purgecaches ; fi
+
+
+#############################################################################
+# Derived targets and dependencies
+
+include $(topsrcdir)/config/makefiles/autotargets.mk
+ifneq ($(NULL),$(AUTO_DEPS))
+  default all libs tools export:: $(AUTO_DEPS)
+endif
+

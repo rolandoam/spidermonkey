@@ -1,41 +1,9 @@
 /* -*- Mode: C; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
  * vim: set ts=8 sw=4 et tw=99:
  *
- * ***** BEGIN LICENSE BLOCK *****
- * Version: MPL 1.1/GPL 2.0/LGPL 2.1
- *
- * The contents of this file are subject to the Mozilla Public License Version
- * 1.1 (the "License"); you may not use this file except in compliance with
- * the License. You may obtain a copy of the License at
- * http://www.mozilla.org/MPL/
- *
- * Software distributed under the License is distributed on an "AS IS" basis,
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
- * for the specific language governing rights and limitations under the
- * License.
- *
- * The Original Code is SpiderMonkey.
- *
- * The Initial Developer of the Original Code is
- * the Mozilla Foundation.
- * Portions created by the Initial Developer are Copyright (C) 2010
- * the Initial Developer. All Rights Reserved.
- *
- * Contributor(s):
- *
- * Alternatively, the contents of this file may be used under the terms of
- * either the GNU General Public License Version 2 or later (the "GPL"), or
- * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
- * in which case the provisions of the GPL or the LGPL are applicable instead
- * of those above. If you wish to allow use of your version of this file only
- * under the terms of either the GPL or the LGPL, and not to allow others to
- * use your version of this file under the terms of the MPL, indicate your
- * decision by deleting the provisions above and replace them with the notice
- * and other provisions required by the GPL or the LGPL. If you do not delete
- * the provisions above, a recipient may use your version of this file under
- * the terms of any one of the MPL, the GPL or the LGPL.
- *
- * ***** END LICENSE BLOCK ***** */
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #ifndef jsfuninlines_h___
 #define jsfuninlines_h___
@@ -85,48 +53,6 @@ JSFunction::initializeExtended()
 }
 
 inline void
-JSFunction::setJoinable()
-{
-    JS_ASSERT(isInterpreted());
-    flags |= JSFUN_JOINABLE;
-}
-
-inline bool
-JSFunction::isClonedMethod() const
-{
-    return joinable() && isExtended() && getExtendedSlot(METHOD_OBJECT_SLOT).isObject();
-}
-
-inline JSAtom *
-JSFunction::methodAtom() const
-{
-    return (joinable() && isExtended() && getExtendedSlot(METHOD_PROPERTY_SLOT).isString())
-           ? (JSAtom *) getExtendedSlot(METHOD_PROPERTY_SLOT).toString()
-           : NULL;
-}
-
-inline void
-JSFunction::setMethodAtom(JSAtom *atom)
-{
-    JS_ASSERT(joinable());
-    setExtendedSlot(METHOD_PROPERTY_SLOT, js::StringValue(atom));
-}
-
-inline JSObject *
-JSFunction::methodObj() const
-{
-    JS_ASSERT(joinable());
-    return isClonedMethod() ? &getExtendedSlot(METHOD_OBJECT_SLOT).toObject() : NULL;
-}
-
-inline void
-JSFunction::setMethodObj(JSObject& obj)
-{
-    JS_ASSERT(joinable());
-    setExtendedSlot(METHOD_OBJECT_SLOT, js::ObjectValue(obj));
-}
-
-inline void
 JSFunction::setExtendedSlot(size_t which, const js::Value &val)
 {
     JS_ASSERT(which < js::ArrayLength(toExtended()->extendedSlots));
@@ -138,74 +64,6 @@ JSFunction::getExtendedSlot(size_t which) const
 {
     JS_ASSERT(which < js::ArrayLength(toExtended()->extendedSlots));
     return toExtended()->extendedSlots[which];
-}
-
-inline bool
-JSFunction::hasFlatClosureUpvars() const
-{
-    JS_ASSERT(isFlatClosure());
-    return isExtended() && !getExtendedSlot(FLAT_CLOSURE_UPVARS_SLOT).isUndefined();
-}
-
-inline js::HeapValue *
-JSFunction::getFlatClosureUpvars() const
-{
-    JS_ASSERT(hasFlatClosureUpvars());
-    return (js::HeapValue *) getExtendedSlot(FLAT_CLOSURE_UPVARS_SLOT).toPrivate();
-}
-
-inline void
-JSFunction::finalizeUpvars()
-{
-    /*
-     * Cloned function objects may be flat closures with upvars to free.
-     *
-     * We must not access JSScript here that is stored in JSFunction. The
-     * script can be finalized before the function or closure instances. So we
-     * just check if JSSLOT_FLAT_CLOSURE_UPVARS holds a private value encoded
-     * as a double. We must also ignore newborn closures that do not have the
-     * private pointer set.
-     *
-     * FIXME bug 648320 - allocate upvars on the GC heap to avoid doing it
-     * here explicitly.
-     */
-    if (hasFlatClosureUpvars()) {
-        js::HeapValue *upvars = getFlatClosureUpvars();
-        js::Foreground::free_(upvars);
-    }
-}
-
-inline js::Value
-JSFunction::getFlatClosureUpvar(uint32_t i) const
-{
-    JS_ASSERT(hasFlatClosureUpvars());
-    JS_ASSERT(script()->bindings.countUpvars() == script()->upvars()->length);
-    JS_ASSERT(i < script()->bindings.countUpvars());
-    return getFlatClosureUpvars()[i];
-}
-
-inline void
-JSFunction::setFlatClosureUpvar(uint32_t i, const js::Value &v)
-{
-    JS_ASSERT(isFlatClosure());
-    JS_ASSERT(script()->bindings.countUpvars() == script()->upvars()->length);
-    JS_ASSERT(i < script()->bindings.countUpvars());
-    getFlatClosureUpvars()[i] = v;
-}
-
-inline void
-JSFunction::initFlatClosureUpvar(uint32_t i, const js::Value &v)
-{
-    JS_ASSERT(isFlatClosure());
-    JS_ASSERT(script()->bindings.countUpvars() == script()->upvars()->length);
-    JS_ASSERT(i < script()->bindings.countUpvars());
-    getFlatClosureUpvars()[i].init(v);
-}
-
-/* static */ inline size_t
-JSFunction::getFlatClosureUpvarsOffset()
-{
-    return offsetof(js::FunctionExtended, extendedSlots[FLAT_CLOSURE_UPVARS_SLOT]);
 }
 
 namespace js {
@@ -255,13 +113,13 @@ IsNativeFunction(const js::Value &v, JSNative native)
  * TODO: a per-thread shape-based cache would be faster and simpler.
  */
 static JS_ALWAYS_INLINE bool
-ClassMethodIsNative(JSContext *cx, JSObject *obj, Class *clasp, jsid methodid, JSNative native)
+ClassMethodIsNative(JSContext *cx, HandleObject obj, Class *clasp, HandleId methodid, JSNative native)
 {
     JS_ASSERT(obj->getClass() == clasp);
 
     Value v;
     if (!HasDataProperty(cx, obj, methodid, &v)) {
-        JSObject *proto = obj->getProto();
+        RootedObject proto(cx, obj->getProto());
         if (!proto || proto->getClass() != clasp || !HasDataProperty(cx, proto, methodid, &v))
             return false;
     }
@@ -315,21 +173,6 @@ Function(JSContext *cx, unsigned argc, Value *vp);
 extern bool
 IsBuiltinFunctionConstructor(JSFunction *fun);
 
-/*
- * Preconditions: funobj->isInterpreted() && !funobj->isFunctionPrototype() &&
- * !funobj->isBoundFunction(). This is sufficient to establish that funobj has
- * a non-configurable non-method .prototype data property, thought it might not
- * have been resolved yet, and its value could be anything.
- *
- * Return the shape of the .prototype property of funobj, resolving it if
- * needed. On error, return NULL.
- *
- * This is not safe to call on trace because it defines properties, which can
- * trigger lookups that could reenter.
- */
-const Shape *
-LookupInterpretedFunctionPrototype(JSContext *cx, JSObject *funobj);
-
 static inline JSObject *
 SkipScopeParent(JSObject *parent)
 {
@@ -341,11 +184,11 @@ SkipScopeParent(JSObject *parent)
 }
 
 inline JSFunction *
-CloneFunctionObject(JSContext *cx, JSFunction *fun, JSObject *parent,
+CloneFunctionObject(JSContext *cx, HandleFunction fun, HandleObject parent,
                     gc::AllocKind kind = JSFunction::FinalizeKind)
 {
     JS_ASSERT(parent);
-    JSObject *proto = parent->global().getOrCreateFunctionPrototype(cx);
+    RootedObject proto(cx, parent->global().getOrCreateFunctionPrototype(cx));
     if (!proto)
         return NULL;
 
@@ -353,17 +196,17 @@ CloneFunctionObject(JSContext *cx, JSFunction *fun, JSObject *parent,
 }
 
 inline JSFunction *
-CloneFunctionObjectIfNotSingleton(JSContext *cx, JSFunction *fun, JSObject *parent)
+CloneFunctionObjectIfNotSingleton(JSContext *cx, HandleFunction fun, HandleObject parent)
 {
     /*
-     * For attempts to clone functions at a function definition opcode or from
-     * a method barrier, don't perform the clone if the function has singleton
-     * type. This was called pessimistically, and we need to preserve the
-     * type's property that if it is singleton there is only a single object
+     * For attempts to clone functions at a function definition opcode,
+     * don't perform the clone if the function has singleton type. This
+     * was called pessimistically, and we need to preserve the type's
+     * property that if it is singleton there is only a single object
      * with its type in existence.
      */
     if (fun->hasSingletonType()) {
-        if (!fun->setParent(cx, SkipScopeParent(parent)))
+        if (!JSObject::setParent(cx, fun, RootedObject(cx, SkipScopeParent(parent))))
             return NULL;
         fun->setEnvironment(parent);
         return fun;
@@ -373,7 +216,7 @@ CloneFunctionObjectIfNotSingleton(JSContext *cx, JSFunction *fun, JSObject *pare
 }
 
 inline JSFunction *
-CloneFunctionObject(JSContext *cx, JSFunction *fun)
+CloneFunctionObject(JSContext *cx, HandleFunction fun)
 {
     /*
      * Variant which makes an exact clone of fun, preserving parent and proto.
@@ -387,7 +230,9 @@ CloneFunctionObject(JSContext *cx, JSFunction *fun)
     if (fun->hasSingletonType())
         return fun;
 
-    return js_CloneFunctionObject(cx, fun, fun->environment(), fun->getProto(),
+    return js_CloneFunctionObject(cx, fun,
+                                  RootedObject(cx, fun->environment()),
+                                  RootedObject(cx, fun->getProto()),
                                   JSFunction::ExtendedFinalizeKind);
 }
 
@@ -397,14 +242,14 @@ inline void
 JSFunction::setScript(JSScript *script_)
 {
     JS_ASSERT(isInterpreted());
-    script() = script_;
+    mutableScript() = script_;
 }
 
 inline void
 JSFunction::initScript(JSScript *script_)
 {
     JS_ASSERT(isInterpreted());
-    script().init(script_);
+    mutableScript().init(script_);
 }
 
 #endif /* jsfuninlines_h___ */

@@ -1,43 +1,9 @@
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
  * vim: set ts=8 sw=4 et tw=78:
  *
- * ***** BEGIN LICENSE BLOCK *****
- * Version: MPL 1.1/GPL 2.0/LGPL 2.1
- *
- * The contents of this file are subject to the Mozilla Public License Version
- * 1.1 (the "License"); you may not use this file except in compliance with
- * the License. You may obtain a copy of the License at
- * http://www.mozilla.org/MPL/
- *
- * Software distributed under the License is distributed on an "AS IS" basis,
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
- * for the specific language governing rights and limitations under the
- * License.
- *
- * The Original Code is Mozilla Communicator client code, released
- * March 31, 1998.
- *
- * The Initial Developer of the Original Code is
- * Netscape Communications Corporation.
- * Portions created by the Initial Developer are Copyright (C) 1998
- * the Initial Developer. All Rights Reserved.
- *
- * Contributor(s):
- *   John Bandhauer <jband@netscape.com> (original author)
- *
- * Alternatively, the contents of this file may be used under the terms of
- * either of the GNU General Public License Version 2 or later (the "GPL"),
- * or the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
- * in which case the provisions of the GPL or the LGPL are applicable instead
- * of those above. If you wish to allow use of your version of this file only
- * under the terms of either the GPL or the LGPL, and not to allow others to
- * use your version of this file under the terms of the MPL, indicate your
- * decision by deleting the provisions above and replace them with the notice
- * and other provisions required by the GPL or the LGPL. If you do not delete
- * the provisions above, a recipient may use your version of this file under
- * the terms of any one of the MPL, the GPL or the LGPL.
- *
- * ***** END LICENSE BLOCK ***** */
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 /* Wrapper object for reflecting native xpcom objects into JavaScript. */
 
@@ -55,15 +21,18 @@
 
 #include "nsContentUtils.h"
 
+#include "mozilla/StandardInteger.h"
 #include "mozilla/Util.h"
+
+using namespace xpc;
 
 bool
 xpc_OkToHandOutWrapper(nsWrapperCache *cache)
 {
     NS_ABORT_IF_FALSE(cache->GetWrapper(), "Must have wrapper");
-    NS_ABORT_IF_FALSE(cache->IsProxy() || IS_WN_WRAPPER(cache->GetWrapper()),
+    NS_ABORT_IF_FALSE(cache->IsDOMBinding() || IS_WN_WRAPPER(cache->GetWrapper()),
                       "Must have proxy or XPCWrappedNative wrapper");
-    return cache->IsProxy() ?
+    return cache->IsDOMBinding() ?
         mozilla::dom::binding::instanceIsProxy(cache->GetWrapper()) :
         !static_cast<XPCWrappedNative*>(xpc_GetJSPrivate(cache->GetWrapper()))->
             NeedsSOW();
@@ -79,26 +48,6 @@ NS_CYCLE_COLLECTION_CLASSNAME(XPCWrappedNative)::Unlink(void *p)
     XPCWrappedNative *tmp = static_cast<XPCWrappedNative*>(p);
     tmp->ExpireWrapper();
     return NS_OK;
-}
-
-struct TraverseExpandoObjectClosure
-{
-    XPCWrappedNative *wn;
-    nsCycleCollectionTraversalCallback &cb;
-};
-
-static PLDHashOperator
-TraverseExpandoObjects(xpc::PtrAndPrincipalHashKey *aKey, JSCompartment *compartment, void *aClosure)
-{
-    TraverseExpandoObjectClosure *closure = static_cast<TraverseExpandoObjectClosure*>(aClosure);
-    xpc::CompartmentPrivate *priv =
-        static_cast<xpc::CompartmentPrivate *>(JS_GetCompartmentPrivate(compartment));
-
-    NS_CYCLE_COLLECTION_NOTE_EDGE_NAME(closure->cb, "XPCWrappedNative expando object");
-    closure->cb.NoteScriptChild(nsIProgrammingLanguage::JAVASCRIPT,
-                                priv->LookupExpandoObjectPreserveColor(closure->wn));
-
-    return PL_DHASH_NEXT;
 }
 
 NS_IMETHODIMP
@@ -138,13 +87,17 @@ NS_CYCLE_COLLECTION_CLASSNAME(XPCWrappedNative)::Traverse(void *p,
 
         JSObject *obj = tmp->GetFlatJSObjectPreserveColor();
         NS_CYCLE_COLLECTION_NOTE_EDGE_NAME(cb, "mFlatJSObject");
-        cb.NoteScriptChild(nsIProgrammingLanguage::JAVASCRIPT, obj);
+        cb.NoteJSChild(obj);
     }
 
     if (tmp->MightHaveExpandoObject()) {
         XPCJSRuntime *rt = tmp->GetRuntime();
-        TraverseExpandoObjectClosure closure = { tmp, cb };
-        rt->GetCompartmentMap().EnumerateRead(TraverseExpandoObjects, &closure);
+        XPCCompartmentSet &set = rt->GetCompartmentSet();
+        for (XPCCompartmentRange r = set.all(); !r.empty(); r.popFront()) {
+            CompartmentPrivate *priv = GetCompartmentPrivate(r.front());
+            NS_CYCLE_COLLECTION_NOTE_EDGE_NAME(cb, "XPCWrappedNative expando object");
+            cb.NoteJSChild(priv->LookupExpandoObjectPreserveColor(tmp));
+        }
     }
 
     // XPCWrappedNative keeps its native object alive.
@@ -362,8 +315,9 @@ XPCWrappedNative::WrapNewGlobal(XPCCallContext &ccx, xpcObjectHelper &nativeHelp
 
     // ...and then ScriptableInfo. We need all this stuff now because it's going
     // to tell us the JSClass of the object we're going to create.
-    XPCNativeScriptableInfo *si = XPCNativeScriptableInfo::Construct(ccx, &sciWrapper);
-    MOZ_ASSERT(si);
+    AutoMarkingNativeScriptableInfoPtr
+        si(ccx, XPCNativeScriptableInfo::Construct(ccx, &sciWrapper));
+    MOZ_ASSERT(si.get());
 
     // Finally, we get to the JSClass.
     JSClass *clasp = si->GetJSClass();
@@ -844,7 +798,11 @@ XPCWrappedNative::Morph(XPCCallContext& ccx,
     AutoMarkingWrappedNativePtr wrapperMarker(ccx, wrapper);
 
     JSAutoEnterCompartment ac;
-    if (!ac.enter(ccx, existingJSObject) || !wrapper->Init(ccx, existingJSObject))
+    if (!ac.enter(ccx, existingJSObject)) {
+        wrapper->mIdentity = nsnull;
+        return NS_ERROR_FAILURE;
+    }
+    if (!wrapper->Init(ccx, existingJSObject))
         return NS_ERROR_FAILURE;
 
     nsresult rv;
@@ -964,7 +922,7 @@ XPCWrappedNative::~XPCWrappedNative()
     Destroy();
 }
 
-static const PRWord WRAPPER_WORD_POISON = 0xa8a8a8a8;
+static const intptr_t WRAPPER_WORD_POISON = 0xa8a8a8a8;
 
 void
 XPCWrappedNative::Destroy()
@@ -1566,15 +1524,6 @@ XPCWrappedNative::ReparentWrapperIfFound(XPCCallContext& ccx,
         return NS_OK;
     }
 
-    bool crosscompartment = js::GetObjectCompartment(aOldScope->GetGlobalJSObject()) !=
-                            js::GetObjectCompartment(aNewScope->GetGlobalJSObject());
-#ifdef DEBUG
-    if (crosscompartment) {
-        NS_ASSERTION(aNewParent, "won't be able to find the new parent");
-        NS_ASSERTION(wrapper, "can't transplant slim wrappers");
-    }
-#endif
-
     // ReparentWrapperIfFound is really only meant to be called from DOM code
     // which must happen only on the main thread. Bail if we're on some other
     // thread or have a non-main-thread-only wrapper.
@@ -1593,6 +1542,12 @@ XPCWrappedNative::ReparentWrapperIfFound(XPCCallContext& ccx,
         // Oh, so now we need to move the wrapper to a different scope.
         AutoMarkingWrappedNativeProtoPtr oldProto(ccx);
         AutoMarkingWrappedNativeProtoPtr newProto(ccx);
+
+        // Cross-scope means cross-compartment.
+        MOZ_ASSERT(js::GetObjectCompartment(aOldScope->GetGlobalJSObject()) !=
+                   js::GetObjectCompartment(aNewScope->GetGlobalJSObject()));
+        NS_ASSERTION(aNewParent, "won't be able to find the new parent");
+        NS_ASSERTION(wrapper, "can't transplant slim wrappers");
 
         if (!wrapper)
             oldProto = GetSlimWrapperProto(flat);
@@ -1648,67 +1603,100 @@ XPCWrappedNative::ReparentWrapperIfFound(XPCCallContext& ccx,
                 (void) newMap->Add(wrapper);
             }
 
-            // We only try to fixup the __proto__ JSObject if the wrapper
-            // is directly using that of its XPCWrappedNativeProto.
+            JSObject *newobj = JS_CloneObject(ccx, flat,
+                                              newProto->GetJSProtoObject(),
+                                              aNewParent);
+            if (!newobj)
+                return NS_ERROR_FAILURE;
 
-            if (crosscompartment) {
-                JSObject *newobj = JS_CloneObject(ccx, flat,
-                                                  newProto->GetJSProtoObject(),
-                                                  aNewParent);
-                if (!newobj)
+            JSObject *propertyHolder =
+                JS_NewObjectWithGivenProto(ccx, NULL, NULL, aNewParent);
+            if (!propertyHolder || !JS_CopyPropertiesFrom(ccx, propertyHolder, flat))
+                return NS_ERROR_OUT_OF_MEMORY;
+
+            // Before proceeding, eagerly create any same-compartment security wrappers
+            // that the object might have. This forces us to take the 'WithWrapper' path
+            // while transplanting that handles this stuff correctly.
+            {
+                JSAutoEnterCompartment innerAC;
+                if (!innerAC.enter(ccx, aOldScope->GetGlobalJSObject()) ||
+                    !wrapper->GetSameCompartmentSecurityWrapper(ccx))
                     return NS_ERROR_FAILURE;
-
-                JS_SetPrivate(flat, nsnull);
-
-                JSObject *propertyHolder =
-                    JS_NewObjectWithGivenProto(ccx, NULL, NULL, aNewParent);
-                if (!propertyHolder || !JS_CopyPropertiesFrom(ccx, propertyHolder, flat))
-                    return NS_ERROR_OUT_OF_MEMORY;
-
-                JSObject *ww = wrapper->GetWrapper();
-                if (ww) {
-                    JSObject *newwrapper;
-                    if (xpc::WrapperFactory::IsLocationObject(flat)) {
-                        newwrapper = xpc::WrapperFactory::WrapLocationObject(ccx, newobj);
-                        if (!newwrapper)
-                            return NS_ERROR_FAILURE;
-                    } else {
-                        NS_ASSERTION(wrapper->NeedsSOW(), "weird wrapper wrapper");
-                        newwrapper = xpc::WrapperFactory::WrapSOWObject(ccx, newobj);
-                        if (!newwrapper)
-                            return NS_ERROR_FAILURE;
-                    }
-
-                    ww = js_TransplantObjectWithWrapper(ccx, flat, ww, newobj,
-                                                        newwrapper);
-                    if (!ww)
-                        return NS_ERROR_FAILURE;
-                    flat = newobj;
-                    wrapper->SetWrapper(ww);
-                } else {
-                    flat = JS_TransplantObject(ccx, flat, newobj);
-                    if (!flat)
-                        return NS_ERROR_FAILURE;
-                }
-
-                wrapper->mFlatJSObject = flat;
-                if (cache)
-                    cache->SetWrapper(flat);
-                if (!JS_CopyPropertiesFrom(ccx, flat, propertyHolder))
-                    return NS_ERROR_FAILURE;
-            } else {
-                if (wrapper->HasProto() &&
-                    js::GetObjectProto(flat) == oldProto->GetJSProtoObject()) {
-                    if (!JS_SetPrototype(ccx, flat, newProto->GetJSProtoObject())) {
-                        // this is bad, very bad
-                        NS_ERROR("JS_SetPrototype failed");
-                        return NS_ERROR_FAILURE;
-                    }
-                } else {
-                    NS_WARNING("Moving XPConnect wrappedNative to new scope, "
-                               "but can't fixup __proto__");
-                }
             }
+
+            // Null out the private of the JS reflector. If we don't, we'll end up
+            // with two JS objects with the same WN in their private slot, and both
+            // will try to delete it during finalization. The one in this
+            // compartment will actually go away quite soon, because we swap() it
+            // with another object during the transplant and let that object die.
+            //
+            // NB: It's important to do this _after_ copying the properties to
+            // propertyHolder. Otherwise, an object with |foo.x === foo| will
+            // crash when JS_CopyPropertiesFrom tries to call wrap() on foo.x.
+            JS_SetPrivate(flat, nsnull);
+
+            JSObject *ww = wrapper->GetWrapper();
+            if (ww) {
+                JSObject *newwrapper;
+                MOZ_ASSERT(!xpc::WrapperFactory::IsComponentsObject(flat), 
+                           "Components object should never get here");
+                if (xpc::WrapperFactory::IsLocationObject(flat)) {
+                    newwrapper = xpc::WrapperFactory::WrapLocationObject(ccx, newobj);
+                    if (!newwrapper)
+                        return NS_ERROR_FAILURE;
+                } else {
+                    NS_ASSERTION(wrapper->NeedsSOW(), "weird wrapper wrapper");
+                    newwrapper = xpc::WrapperFactory::WrapSOWObject(ccx, newobj);
+                    if (!newwrapper)
+                        return NS_ERROR_FAILURE;
+                }
+
+                // Ok, now we do the special object-plus-wrapper transplant.
+                //
+                // This is some pretty serious brain surgery.
+                //
+                // In the case where we wrap a Location object from a same-
+                // origin compartment, we actually want our cross-compartment
+                // wrapper to point to the same-compartment wrapper in the
+                // other compartment. This double-wrapping allows expandos to
+                // be shared. So our wrapping callback (in WrapperFactory.cpp)
+                // calls XPCWrappedNative::GetSameCompartmentSecurityWrapper
+                // before wrapping same-origin Location objects.
+                //
+                // This normally works fine, but gets tricky here.
+                // js_TransplantObjectWithWrapper needs to update the old
+                // same-compartment security wrapper to be a cross-compartment
+                // wrapper to the newly transplanted object. So it needs to go
+                // through the aforementioned double-wrapping mechanism.
+                // But during the call, things aren't really in a consistent
+                // state, because mFlatJSObject hasn't yet been updated to
+                // point to the object in the new compartment.
+                //
+                // So we need to cache the new same-compartment security
+                // wrapper on the XPCWN before the call, so that
+                // GetSameCompartmentSecurityWrapper can return early before
+                // getting confused. Hold your breath.
+                JSObject *wwsaved = ww;
+                wrapper->SetWrapper(newwrapper);
+                ww = js_TransplantObjectWithWrapper(ccx, flat, ww, newobj,
+                                                    newwrapper);
+                if (!ww) {
+                    wrapper->SetWrapper(wwsaved);
+                    return NS_ERROR_FAILURE;
+                }
+
+                flat = newobj;
+            } else {
+                flat = JS_TransplantObject(ccx, flat, newobj);
+                if (!flat)
+                    return NS_ERROR_FAILURE;
+            }
+
+            wrapper->mFlatJSObject = flat;
+            if (cache)
+                cache->SetWrapper(flat);
+            if (!JS_CopyPropertiesFrom(ccx, flat, propertyHolder))
+                return NS_ERROR_FAILURE;
         } else {
             JS_SetReservedSlot(flat, 0,
                                PRIVATE_TO_JSVAL(newProto.get()));
@@ -1838,8 +1826,8 @@ return_tearoff:
 
         // Unwrap any wrapper wrappers.
         JSObject *unsafeObj = cx
-                              ? XPCWrapper::Unwrap(cx, cur)
-                              : XPCWrapper::UnsafeUnwrapSecurityWrapper(cur);
+                              ? XPCWrapper::Unwrap(cx, cur, /* stopAtOuter = */ false)
+                              : js::UnwrapObject(cur, /* stopAtOuter = */ false);
         if (unsafeObj) {
             obj = unsafeObj;
             goto restart;
@@ -2160,6 +2148,56 @@ XPCWrappedNative::InitTearOffJSObject(XPCCallContext& ccx,
     JS_SetPrivate(obj, to);
     to->SetJSObject(obj);
     return true;
+}
+
+JSObject*
+XPCWrappedNative::GetSameCompartmentSecurityWrapper(JSContext *cx)
+{
+    // Grab the current state of affairs.
+    JSObject *flat = GetFlatJSObject();
+    JSObject *wrapper = GetWrapper();
+
+    // If we already have a wrapper, it must be what we want.
+    //
+    // NB: This must come before anything below because of some trickiness
+    // with brain transplants. See the "pretty serious brain surgery" comment
+    // in ReparentWrapperIfFound.
+    if (wrapper)
+        return wrapper;
+
+    // Chrome callers don't need same-compartment security wrappers.
+    JSCompartment *cxCompartment = js::GetContextCompartment(cx);
+    MOZ_ASSERT(cxCompartment == js::GetObjectCompartment(flat));
+    if (xpc::AccessCheck::isChrome(cxCompartment)) {
+        MOZ_ASSERT(wrapper == NULL);
+        return flat;
+    }
+
+    // Check the possibilities. Note that we need to check for null in each
+    // case in order to distinguish between the 'no need for wrapper' and
+    // 'wrapping failed' cases.
+    if (xpc::WrapperFactory::IsLocationObject(flat)) {
+        wrapper = xpc::WrapperFactory::WrapLocationObject(cx, flat);
+        if (!wrapper)
+            return NULL;
+    } else if (NeedsSOW()) {
+        wrapper = xpc::WrapperFactory::WrapSOWObject(cx, flat);
+        if (!wrapper)
+            return NULL;
+    } else if (xpc::WrapperFactory::IsComponentsObject(flat)) {
+        wrapper = xpc::WrapperFactory::WrapComponentsObject(cx, flat);
+        if (!wrapper)
+            return NULL;
+    }
+
+    // If we made a wrapper, cache it and return it.
+    if (wrapper) {
+        SetWrapper(wrapper);
+        return wrapper;
+    }
+
+    // Otherwise, just return the bare JS reflection.
+    return flat;
 }
 
 /***************************************************************************/
@@ -2562,9 +2600,9 @@ CallMethodHelper::GatherAndConvertResults()
             mCallContext.SetRetVal(v);
         } else if (i < mArgc) {
             // we actually assured this before doing the invoke
-            NS_ASSERTION(JSVAL_IS_OBJECT(mArgv[i]), "out var is not object");
+            NS_ASSERTION(mArgv[i].isObject(), "out var is not object");
             if (!JS_SetPropertyById(mCallContext,
-                                    JSVAL_TO_OBJECT(mArgv[i]),
+                                    &mArgv[i].toObject(),
                                     mIdxValueId, &v)) {
                 ThrowBadParam(NS_ERROR_XPC_CANT_SET_OUT_VAL, i, mCallContext);
                 return false;
@@ -2588,11 +2626,14 @@ CallMethodHelper::QueryInterfaceFastPath() const
         Throw(NS_ERROR_XPC_NOT_ENOUGH_ARGS, mCallContext);
         return false;
     }
-    const nsID* iid;
-    JSObject* obj;
-    if (!JSVAL_IS_OBJECT(mArgv[0]) ||
-        (!(obj = JSVAL_TO_OBJECT(mArgv[0]))) ||
-        (!(iid = xpc_JSObjectToID(mCallContext, obj)))) {
+    
+    if (!mArgv[0].isObject()) {
+        ThrowBadParam(NS_ERROR_XPC_BAD_CONVERT_JS, 0, mCallContext);
+        return false;
+    }
+
+    const nsID* iid = xpc_JSObjectToID(mCallContext, &mArgv[0].toObject());
+    if (!iid) {
         ThrowBadParam(NS_ERROR_XPC_BAD_CONVERT_JS, 0, mCallContext);
         return false;
     }
@@ -3686,19 +3727,17 @@ XPCJSObjectHolder::~XPCJSObjectHolder()
 void
 XPCJSObjectHolder::TraceJS(JSTracer *trc)
 {
-    JS_SET_TRACING_DETAILS(trc, PrintTraceName, this, 0);
+    JS_SET_TRACING_DETAILS(trc, GetTraceName, this, 0);
     JS_CallTracer(trc, mJSObj, JSTRACE_OBJECT);
 }
 
-#ifdef DEBUG
 // static
 void
-XPCJSObjectHolder::PrintTraceName(JSTracer* trc, char *buf, size_t bufsize)
+XPCJSObjectHolder::GetTraceName(JSTracer* trc, char *buf, size_t bufsize)
 {
     JS_snprintf(buf, bufsize, "XPCJSObjectHolder[0x%p].mJSObj",
                 trc->debugPrintArg);
 }
-#endif
 
 // static
 XPCJSObjectHolder*

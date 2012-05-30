@@ -1,41 +1,8 @@
 /* -*- Mode: C; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
  *
- * ***** BEGIN LICENSE BLOCK *****
- * Version: MPL 1.1/GPL 2.0/LGPL 2.1
- *
- * The contents of this file are subject to the Mozilla Public License Version
- * 1.1 (the "License"); you may not use this file except in compliance with
- * the License. You may obtain a copy of the License at
- * http://www.mozilla.org/MPL/
- *
- * Software distributed under the License is distributed on an "AS IS" basis,
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
- * for the specific language governing rights and limitations under the
- * License.
- *
- * The Original Code is Mozilla Communicator client code, released
- * March 31, 1998.
- *
- * The Initial Developer of the Original Code is
- * Netscape Communications Corporation.
- * Portions created by the Initial Developer are Copyright (C) 1998
- * the Initial Developer. All Rights Reserved.
- *
- * Contributor(s):
- *
- * Alternatively, the contents of this file may be used under the terms of
- * either of the GNU General Public License Version 2 or later (the "GPL"),
- * or the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
- * in which case the provisions of the GPL or the LGPL are applicable instead
- * of those above. If you wish to allow use of your version of this file only
- * under the terms of either the GPL or the LGPL, and not to allow others to
- * use your version of this file under the terms of the MPL, indicate your
- * decision by deleting the provisions above and replace them with the notice
- * and other provisions required by the GPL or the LGPL. If you do not delete
- * the provisions above, a recipient may use your version of this file under
- * the terms of any one of the MPL, the GPL or the LGPL.
- *
- * ***** END LICENSE BLOCK ***** */
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #ifndef jsopcode_h___
 #define jsopcode_h___
@@ -93,13 +60,13 @@ typedef enum JSOp {
 #define JOF_INT8          18      /* int8_t immediate operand */
 #define JOF_ATOMOBJECT    19      /* uint16_t constant index + object index */
 #define JOF_UINT16PAIR    20      /* pair of uint16_t immediates */
+#define JOF_SCOPECOORD    21      /* pair of uint16_t immediates followed by atom index */
 #define JOF_TYPEMASK      0x001f  /* mask for above immediate types */
 
 #define JOF_NAME          (1U<<5) /* name operation */
 #define JOF_PROP          (2U<<5) /* obj.prop operation */
 #define JOF_ELEM          (3U<<5) /* obj[index] operation */
 #define JOF_XMLNAME       (4U<<5) /* XML name: *, a::b, @a, @a::b, etc. */
-#define JOF_VARPROP       (5U<<5) /* x.prop for this, arg, var, or local x */
 #define JOF_MODEMASK      (7U<<5) /* mask for above addressing modes */
 #define JOF_SET           (1U<<8) /* set (i.e., assignment) operation */
 #define JOF_DEL           (1U<<9) /* delete operation */
@@ -521,10 +488,10 @@ FlowsIntoNext(JSOp op)
 
 /*
  * Counts accumulated for a single opcode in a script. The counts tracked vary
- * between opcodes, and this structure ensures that counts are accessed in
- * a coherent fashion.
+ * between opcodes, and this structure ensures that counts are accessed in a
+ * coherent fashion.
  */
-class OpcodeCounts
+class PCCounts
 {
     friend struct ::JSScript;
     double *counts;
@@ -542,11 +509,11 @@ class OpcodeCounts
         BASE_METHODJIT_CODE,
         BASE_METHODJIT_PICS,
 
-        BASE_COUNT
+        BASE_LIMIT
     };
 
     enum AccessCounts {
-        ACCESS_MONOMORPHIC = BASE_COUNT,
+        ACCESS_MONOMORPHIC = BASE_LIMIT,
         ACCESS_DIMORPHIC,
         ACCESS_POLYMORPHIC,
 
@@ -561,7 +528,7 @@ class OpcodeCounts
         ACCESS_STRING,
         ACCESS_OBJECT,
 
-        ACCESS_COUNT
+        ACCESS_LIMIT
     };
 
     static bool accessOp(JSOp op) {
@@ -569,7 +536,7 @@ class OpcodeCounts
          * Access ops include all name, element and property reads, as well as
          * SETELEM and SETPROP (for ElementCounts/PropertyCounts alignment).
          */
-        if (op == JSOP_SETELEM || op == JSOP_SETPROP || op == JSOP_SETMETHOD)
+        if (op == JSOP_SETELEM || op == JSOP_SETPROP)
             return true;
         int format = js_CodeSpec[op].format;
         return !!(format & (JOF_NAME | JOF_GNAME | JOF_ELEM | JOF_PROP))
@@ -577,7 +544,7 @@ class OpcodeCounts
     }
 
     enum ElementCounts {
-        ELEM_ID_INT = ACCESS_COUNT,
+        ELEM_ID_INT = ACCESS_LIMIT,
         ELEM_ID_DOUBLE,
         ELEM_ID_OTHER,
         ELEM_ID_UNKNOWN,
@@ -587,7 +554,7 @@ class OpcodeCounts
         ELEM_OBJECT_DENSE,
         ELEM_OBJECT_OTHER,
 
-        ELEM_COUNT
+        ELEM_LIMIT
     };
 
     static bool elementOp(JSOp op) {
@@ -595,11 +562,11 @@ class OpcodeCounts
     }
 
     enum PropertyCounts {
-        PROP_STATIC = ACCESS_COUNT,
+        PROP_STATIC = ACCESS_LIMIT,
         PROP_DEFINITE,
         PROP_OTHER,
 
-        PROP_COUNT
+        PROP_LIMIT
     };
 
     static bool propertyOp(JSOp op) {
@@ -607,12 +574,12 @@ class OpcodeCounts
     }
 
     enum ArithCounts {
-        ARITH_INT = BASE_COUNT,
+        ARITH_INT = BASE_LIMIT,
         ARITH_DOUBLE,
         ARITH_OTHER,
         ARITH_UNKNOWN,
 
-        ARITH_COUNT
+        ARITH_LIMIT
     };
 
     static bool arithOp(JSOp op) {
@@ -623,14 +590,14 @@ class OpcodeCounts
     {
         if (accessOp(op)) {
             if (elementOp(op))
-                return ELEM_COUNT;
+                return ELEM_LIMIT;
             if (propertyOp(op))
-                return PROP_COUNT;
-            return ACCESS_COUNT;
+                return PROP_LIMIT;
+            return ACCESS_LIMIT;
         }
         if (arithOp(op))
-            return ARITH_COUNT;
-        return BASE_COUNT;
+            return ARITH_LIMIT;
+        return BASE_LIMIT;
     }
 
     static const char *countName(JSOp op, size_t which);

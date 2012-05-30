@@ -1,6 +1,10 @@
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
  * vim: set ts=8 sw=4 et tw=99:
  */
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
 
 #include "tests.h"
 #include "jsdbgapi.h"
@@ -178,7 +182,7 @@ BEGIN_TEST(testDebugger_debuggerObjectVsDebugMode)
          "hits;\n",
          &v);
     CHECK_SAME(v, INT_TO_JSVAL(4));
-    
+
     return true;
 }
 END_TEST(testDebugger_debuggerObjectVsDebugMode)
@@ -273,10 +277,10 @@ BEGIN_TEST(testDebugger_singleStepThrow)
     static JSBool
     setStepMode(JSContext *cx, unsigned argc, jsval *vp)
     {
-        JSStackFrame *fp = JS_GetScriptedCaller(cx, NULL);
-        JS_ASSERT(fp);
-        JSScript *script = JS_GetFrameScript(cx, fp);
+        JSScript *script;
+        JS_DescribeScriptedCaller(cx, &script, NULL);
         JS_ASSERT(script);
+
         if (!JS_SetSingleStepMode(cx, script, true))
             return false;
         JS_SET_RVAL(cx, vp, JSVAL_VOID);
@@ -289,32 +293,3 @@ BEGIN_TEST(testDebugger_singleStepThrow)
         return JSTRAP_CONTINUE;
     }
 END_TEST(testDebugger_singleStepThrow)
-
-BEGIN_TEST(testDebugger_emptyObjectPropertyIterator)
-{
-    JSObject *obj = JS_NewObject(cx, NULL, NULL, NULL);
-    JSScopeProperty *prop = NULL;
-    CHECK(!JS_PropertyIterator(obj, &prop));
-    CHECK(!prop);
-
-    return true;
-}
-END_TEST(testDebugger_emptyObjectPropertyIterator)
-
-BEGIN_TEST(testDebugger_nonEmptyObjectPropertyIterator)
-{
-    jsval v;
-    EVAL("({a: 15})", &v);
-    JSObject *obj = JSVAL_TO_OBJECT(v);
-    JSScopeProperty *prop = NULL;
-    CHECK(JS_PropertyIterator(obj, &prop));
-    JSPropertyDesc desc;
-    CHECK(JS_GetPropertyDesc(cx, obj, prop, &desc));
-    CHECK_EQUAL(JSVAL_IS_INT(desc.value), true);
-    CHECK_EQUAL(JSVAL_TO_INT(desc.value), 15);
-    CHECK(!JS_PropertyIterator(obj, &prop));
-    CHECK(!prop);
-
-    return true;
-}
-END_TEST(testDebugger_nonEmptyObjectPropertyIterator)

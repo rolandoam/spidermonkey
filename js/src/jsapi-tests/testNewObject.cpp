@@ -1,8 +1,14 @@
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
  * vim: set ts=8 sw=4 et tw=99:
  */
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
 
 #include "tests.h"
+
+#include "jsfriendapi.h"
 
 const size_t N = 1000;
 static jsval argv[N];
@@ -13,7 +19,7 @@ constructHook(JSContext *cx, unsigned argc, jsval *vp)
     // Check that arguments were passed properly from JS_New.
     JSObject *callee = JSVAL_TO_OBJECT(JS_CALLEE(cx, vp));
 
-    JSObject *obj = JS_NewObjectForConstructor(cx, vp);
+    JSObject *obj = JS_NewObjectForConstructor(cx, js::Jsvalify(&js::ObjectClass), vp);
     if (!obj) {
         JS_ReportError(cx, "test failed, could not construct object");
         return false;
@@ -86,7 +92,7 @@ BEGIN_TEST(testNewObject_1)
         0,
         JS_PropertyStub, JS_PropertyStub, JS_PropertyStub, JS_StrictPropertyStub,
         JS_EnumerateStub, JS_ResolveStub, JS_ConvertStub, NULL,
-        NULL, NULL, constructHook
+        NULL, NULL, NULL, constructHook
     };
     JSObject *ctor = JS_NewObject(cx, &cls, NULL, NULL);
     CHECK(ctor);

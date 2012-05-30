@@ -1,39 +1,7 @@
 /* -*- Mode: C; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
-/* ***** BEGIN LICENSE BLOCK *****
- * Version: MPL 1.1/GPL 2.0/LGPL 2.1
- *
- * The contents of this file are subject to the Mozilla Public License Version
- * 1.1 (the "License"); you may not use this file except in compliance with
- * the License. You may obtain a copy of the License at
- * http://www.mozilla.org/MPL/
- *
- * Software distributed under the License is distributed on an "AS IS" basis,
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
- * for the specific language governing rights and limitations under the
- * License.
- *
- * The Original Code is mozilla.org code.
- *
- * The Initial Developer of the Original Code is
- * Netscape Communications Corporation.
- * Portions created by the Initial Developer are Copyright (C) 1998
- * the Initial Developer. All Rights Reserved.
- *
- * Contributor(s):
- *
- * Alternatively, the contents of this file may be used under the terms of
- * either the GNU General Public License Version 2 or later (the "GPL"), or
- * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
- * in which case the provisions of the GPL or the LGPL are applicable instead
- * of those above. If you wish to allow use of your version of this file only
- * under the terms of either the GPL or the LGPL, and not to allow others to
- * use your version of this file under the terms of the MPL, indicate your
- * decision by deleting the provisions above and replace them with the notice
- * and other provisions required by the GPL or the LGPL. If you do not delete
- * the provisions above, a recipient may use your version of this file under
- * the terms of any one of the MPL, the GPL or the LGPL.
- *
- * ***** END LICENSE BLOCK ***** */
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 /*
  * JavaScript Debugging support - 'High Level' functions
@@ -72,8 +40,7 @@ void JSD_ASSERT_VALID_CONTEXT(JSDContext* jsdc)
 static JSClass global_class = {
     "JSDGlobal", JSCLASS_GLOBAL_FLAGS,
     JS_PropertyStub,  JS_PropertyStub,  JS_PropertyStub,  JS_StrictPropertyStub,
-    JS_EnumerateStub, JS_ResolveStub,   JS_ConvertStub,   JS_FinalizeStub,
-    JSCLASS_NO_OPTIONAL_MEMBERS
+    JS_EnumerateStub, JS_ResolveStub,   JS_ConvertStub
 };
 
 static JSBool
@@ -149,6 +116,9 @@ _newJSDContext(JSRuntime*         jsrt,
     if( ! call )
         goto label_newJSDContext_failure;
 
+    if ( ! JS_AddNamedObjectRoot(jsdc->dumbContext, &jsdc->glob, "JSD context global") )
+        goto label_newJSDContext_failure;
+
     ok = JS_InitStandardClasses(jsdc->dumbContext, jsdc->glob);
 
     JS_LeaveCrossCompartmentCall(call);
@@ -168,6 +138,8 @@ _newJSDContext(JSRuntime*         jsrt,
 
 label_newJSDContext_failure:
     if( jsdc ) {
+        if ( jsdc->dumbContext && jsdc->glob )
+            JS_RemoveObjectRootRT(JS_GetRuntime(jsdc->dumbContext), &jsdc->glob);
         jsd_DestroyObjectManager(jsdc);
         jsd_DestroyAtomTable(jsdc);
         if( jsdc->dumbContext )
@@ -186,6 +158,9 @@ _destroyJSDContext(JSDContext* jsdc)
     JS_REMOVE_LINK(&jsdc->links);
     JSD_UNLOCK();
 
+    if ( jsdc->dumbContext && jsdc->glob ) {
+        JS_RemoveObjectRootRT(JS_GetRuntime(jsdc->dumbContext), &jsdc->glob);
+    }
     jsd_DestroyObjectManager(jsdc);
     jsd_DestroyAtomTable(jsdc);
 
@@ -276,6 +251,10 @@ jsd_DebuggerPause(JSDContext* jsdc, JSBool forceAllHooksOff)
     JS_SetThrowHook(jsdc->jsrt, NULL, NULL);
     JS_SetDebugErrorHook(jsdc->jsrt, NULL, NULL);
 }
+
+static JSBool
+jsd_DebugErrorHook(JSContext *cx, const char *message,
+                   JSErrorReport *report, void *closure);
 
 void
 jsd_DebuggerUnpause(JSDContext* jsdc)

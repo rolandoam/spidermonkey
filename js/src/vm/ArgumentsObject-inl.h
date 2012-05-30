@@ -1,42 +1,9 @@
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
  * vim: set ts=8 sw=4 et tw=78:
  *
- * ***** BEGIN LICENSE BLOCK *****
- * Version: MPL 1.1/GPL 2.0/LGPL 2.1
- *
- * The contents of this file are subject to the Mozilla Public License Version
- * 1.1 (the "License"); you may not use this file except in compliance with
- * the License. You may obtain a copy of the License at
- * http://www.mozilla.org/MPL/
- *
- * Software distributed under the License is distributed on an "AS IS" basis,
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
- * for the specific language governing rights and limitations under the
- * License.
- *
- * The Original Code is SpiderMonkey arguments object code.
- *
- * The Initial Developer of the Original Code is
- * the Mozilla Foundation.
- * Portions created by the Initial Developer are Copyright (C) 2011
- * the Initial Developer. All Rights Reserved.
- *
- * Contributor(s):
- *   Jeff Walden <jwalden+code@mit.edu> (original author)
- *
- * Alternatively, the contents of this file may be used under the terms of
- * either of the GNU General Public License Version 2 or later (the "GPL"),
- * or the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
- * in which case the provisions of the GPL or the LGPL are applicable instead
- * of those above. If you wish to allow use of your version of this file only
- * under the terms of either the GPL or the LGPL, and not to allow others to
- * use your version of this file under the terms of the MPL, indicate your
- * decision by deleting the provisions above and replace them with the notice
- * and other provisions required by the GPL or the LGPL. If you do not delete
- * the provisions above, a recipient may use your version of this file under
- * the terms of any one of the MPL, the GPL or the LGPL.
- *
- * ***** END LICENSE BLOCK ***** */
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #ifndef ArgumentsObject_inl_h___
 #define ArgumentsObject_inl_h___
@@ -89,39 +56,42 @@ ArgumentsObject::data() const
     return reinterpret_cast<js::ArgumentsData *>(getFixedSlot(DATA_SLOT).toPrivate());
 }
 
+inline bool
+ArgumentsObject::isElementDeleted(uint32_t i) const
+{
+    return IsBitArrayElementSet(data()->deletedBits, initialLength(), i);
+}
+
+inline bool
+ArgumentsObject::isAnyElementDeleted() const
+{
+    return IsAnyBitArrayElementSet(data()->deletedBits, initialLength());
+}
+
+inline void
+ArgumentsObject::markElementDeleted(uint32_t i)
+{
+    SetBitArrayElement(data()->deletedBits, initialLength(), i);
+}
+
 inline const js::Value &
 ArgumentsObject::element(uint32_t i) const
 {
-    JS_ASSERT(i < initialLength());
+    JS_ASSERT(!isElementDeleted(i));
     return data()->slots[i];
-}
-
-inline const js::Value *
-ArgumentsObject::elements() const
-{
-    return Valueify(data()->slots);
 }
 
 inline void
 ArgumentsObject::setElement(uint32_t i, const js::Value &v)
 {
-    JS_ASSERT(i < initialLength());
+    JS_ASSERT(!isElementDeleted(i));
     data()->slots[i] = v;
 }
 
 inline bool
 ArgumentsObject::getElement(uint32_t i, Value *vp)
 {
-    if (i >= initialLength())
-        return false;
-
-    *vp = element(i);
-
-    /*
-     * If the argument was overwritten, it could be in any object slot, so we
-     * can't optimize.
-     */
-    if (vp->isMagic(JS_ARGS_HOLE))
+    if (i >= initialLength() || isElementDeleted(i))
         return false;
 
     /*
@@ -133,6 +103,8 @@ ArgumentsObject::getElement(uint32_t i, Value *vp)
     JS_ASSERT_IF(isStrictArguments(), !fp);
     if (fp)
         *vp = fp->canonicalActualArg(i);
+    else
+        *vp = element(i);
     return true;
 }
 
@@ -144,8 +116,6 @@ struct STATIC_SKIP_INFERENCE CopyNonHoleArgsTo
     ArgumentsObject &argsobj;
     Value *dst;
     bool operator()(uint32_t argi, Value *src) {
-        if (argsobj.element(argi).isMagic(JS_ARGS_HOLE))
-            return false;
         *dst++ = *src;
         return true;
     }
@@ -159,21 +129,18 @@ ArgumentsObject::getElements(uint32_t start, uint32_t count, Value *vp)
     JS_ASSERT(start + count >= start);
 
     uint32_t length = initialLength();
-    if (start > length || start + count > length)
+    if (start > length || start + count > length || isAnyElementDeleted())
         return false;
 
     StackFrame *fp = maybeStackFrame();
 
     /* If there's no stack frame for this, argument values are in elements(). */
     if (!fp) {
-        const Value *srcbeg = elements() + start;
+        const Value *srcbeg = Valueify(data()->slots) + start;
         const Value *srcend = srcbeg + count;
         const Value *src = srcbeg;
-        for (Value *dst = vp; src < srcend; ++dst, ++src) {
-            if (src->isMagic(JS_ARGS_HOLE))
-                return false;
+        for (Value *dst = vp; src < srcend; ++dst, ++src)
             *dst = *src;
-        }
         return true;
     }
 
@@ -209,7 +176,7 @@ NormalArgumentsObject::callee() const
 inline void
 NormalArgumentsObject::clearCallee()
 {
-    data()->callee.set(compartment(), MagicValue(JS_ARGS_HOLE));
+    data()->callee.set(compartment(), MagicValue(JS_OVERWRITTEN_CALLEE));
 }
 
 } // namespace js

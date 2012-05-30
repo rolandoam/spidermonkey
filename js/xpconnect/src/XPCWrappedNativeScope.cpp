@@ -1,47 +1,17 @@
 /* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
-/* ***** BEGIN LICENSE BLOCK *****
- * Version: MPL 1.1/GPL 2.0/LGPL 2.1
- *
- * The contents of this file are subject to the Mozilla Public License Version
- * 1.1 (the "License"); you may not use this file except in compliance with
- * the License. You may obtain a copy of the License at
- * http://www.mozilla.org/MPL/
- *
- * Software distributed under the License is distributed on an "AS IS" basis,
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
- * for the specific language governing rights and limitations under the
- * License.
- *
- * The Original Code is Mozilla Communicator client code, released
- * March 31, 1998.
- *
- * The Initial Developer of the Original Code is
- * Netscape Communications Corporation.
- * Portions created by the Initial Developer are Copyright (C) 1999
- * the Initial Developer. All Rights Reserved.
- *
- * Contributor(s):
- *   John Bandhauer <jband@netscape.com> (original author)
- *
- * Alternatively, the contents of this file may be used under the terms of
- * either of the GNU General Public License Version 2 or later (the "GPL"),
- * or the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
- * in which case the provisions of the GPL or the LGPL are applicable instead
- * of those above. If you wish to allow use of your version of this file only
- * under the terms of either the GPL or the LGPL, and not to allow others to
- * use your version of this file under the terms of the MPL, indicate your
- * decision by deleting the provisions above and replace them with the notice
- * and other provisions required by the GPL or the LGPL. If you do not delete
- * the provisions above, a recipient may use your version of this file under
- * the terms of any one of the MPL, the GPL or the LGPL.
- *
- * ***** END LICENSE BLOCK ***** */
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 /* Class used to manage the wrapped native objects within a JS scope. */
 
 #include "xpcprivate.h"
 #include "XPCWrapper.h"
 #include "jsproxy.h"
+
+#include "mozilla/dom/BindingUtils.h"
+
+using namespace mozilla;
 
 /***************************************************************************/
 
@@ -145,7 +115,8 @@ XPCWrappedNativeScope::XPCWrappedNativeScope(XPCCallContext& ccx,
         mPrototypeJSObject(nsnull),
         mPrototypeNoHelper(nsnull),
         mScriptObjectPrincipal(nsnull),
-        mNewDOMBindingsEnabled(ccx.GetRuntime()->NewDOMBindingsEnabled())
+        mNewDOMBindingsEnabled(ccx.GetRuntime()->NewDOMBindingsEnabled()),
+        mExperimentalBindingsEnabled(ccx.GetRuntime()->ExperimentalBindingsEnabled())
 {
     // add ourselves to the scopes list
     {   // scoped lock
@@ -153,7 +124,7 @@ XPCWrappedNativeScope::XPCWrappedNativeScope(XPCCallContext& ccx,
 
 #ifdef DEBUG
         for (XPCWrappedNativeScope* cur = gScopes; cur; cur = cur->mNext)
-            NS_ASSERTION(aGlobal != cur->GetGlobalJSObject(), "dup object");
+            MOZ_ASSERT(aGlobal != cur->GetGlobalJSObjectPreserveColor(), "dup object");
 #endif
 
         mNext = gScopes;
@@ -185,9 +156,13 @@ XPCWrappedNativeScope::IsDyingScope(XPCWrappedNativeScope *scope)
 void
 XPCWrappedNativeScope::SetComponents(nsXPCComponents* aComponents)
 {
-    NS_IF_ADDREF(aComponents);
-    NS_IF_RELEASE(mComponents);
     mComponents = aComponents;
+}
+
+nsXPCComponents*
+XPCWrappedNativeScope::GetComponents()
+{
+    return mComponents;
 }
 
 // Dummy JS class to let wrappers w/o an xpc prototype share
@@ -237,16 +212,28 @@ XPCWrappedNativeScope::SetGlobal(XPCCallContext& ccx, JSObject* aGlobal,
 
     // Try to find the native global object. If we didn't receive it explicitly,
     // we might be able to find it in the private slot.
-    nsISupports* native = aNative;
-    if (!native &&
-        !(~js::GetObjectJSClass(aGlobal)->flags & (JSCLASS_HAS_PRIVATE |
-                                                   JSCLASS_PRIVATE_IS_NSISUPPORTS)))
-    {
-        // Get the private. It might be a WN, in which case we dig deeper.
-        native = (nsISupports*)xpc_GetJSPrivate(aGlobal);
-        nsCOMPtr<nsIXPConnectWrappedNative> wn = do_QueryInterface(native);
+    nsISupports *native;
+    if (aNative) {
+        native = aNative;
+    } else {
+        const JSClass *jsClass = js::GetObjectJSClass(aGlobal);
+        nsISupports *priv;
+        if (!(~jsClass->flags & (JSCLASS_HAS_PRIVATE |
+                                 JSCLASS_PRIVATE_IS_NSISUPPORTS))) {
+            // Our global has an nsISupports native pointer.  Let's
+            // see whether it's what we want.
+            priv = static_cast<nsISupports*>(xpc_GetJSPrivate(aGlobal));
+        } else if ((jsClass->flags & JSCLASS_IS_DOMJSCLASS) &&
+                   dom::DOMJSClass::FromJSClass(jsClass)->mDOMObjectIsISupports) {
+            priv = dom::UnwrapDOMObject<nsISupports>(aGlobal, jsClass);
+        } else {
+            priv = nsnull;
+        }
+        nsCOMPtr<nsIXPConnectWrappedNative> wn = do_QueryInterface(priv);
         if (wn)
-            native = static_cast<XPCWrappedNative*>(native)->GetIdentityObject();
+            native = static_cast<XPCWrappedNative*>(wn.get())->GetIdentityObject();
+        else
+            native = priv;
     }
 
     // Now init our script object principal, if the new global has one.
@@ -291,9 +278,14 @@ XPCWrappedNativeScope::~XPCWrappedNativeScope()
     if (mContext)
         mContext->RemoveScope(this);
 
+    // This should not be necessary, since the Components object should die
+    // with the scope but just in case.
+    if (mComponents)
+        mComponents->mScope = nsnull;
+
     // XXX we should assert that we are dead or that xpconnect has shutdown
     // XXX might not want to do this at xpconnect shutdown time???
-    NS_IF_RELEASE(mComponents);
+    mComponents = nsnull;
 
     JSRuntime *rt = mRuntime->GetJSRuntime();
     mGlobalJSObject.finalize(rt);
@@ -379,7 +371,7 @@ XPCWrappedNativeScope::SuspectAllWrappers(XPCJSRuntime* rt,
 
 // static
 void
-XPCWrappedNativeScope::FinishedMarkPhaseOfGC(JSContext* cx, XPCJSRuntime* rt)
+XPCWrappedNativeScope::StartFinalizationPhaseOfGC(JSFreeOp *fop, XPCJSRuntime* rt)
 {
     // FIXME The lock may not be necessary since we are inside JSGC_MARK_END
     // callback and GX serializes access to JS runtime. See bug 380139.
@@ -399,7 +391,7 @@ XPCWrappedNativeScope::FinishedMarkPhaseOfGC(JSContext* cx, XPCJSRuntime* rt)
 
         if (cur->mGlobalJSObject &&
             JS_IsAboutToBeFinalized(cur->mGlobalJSObject)) {
-            cur->mGlobalJSObject.finalize(cx);
+            cur->mGlobalJSObject.finalize(fop->runtime());
             cur->mScriptObjectPrincipal = nsnull;
             if (cur->GetCachedDOMPrototypes().IsInitialized())
                  cur->GetCachedDOMPrototypes().Clear();
@@ -414,7 +406,7 @@ XPCWrappedNativeScope::FinishedMarkPhaseOfGC(JSContext* cx, XPCJSRuntime* rt)
         } else {
             if (cur->mPrototypeJSObject &&
                 JS_IsAboutToBeFinalized(cur->mPrototypeJSObject)) {
-                cur->mPrototypeJSObject.finalize(cx);
+                cur->mPrototypeJSObject.finalize(fop->runtime());
             }
             if (cur->mPrototypeNoHelper &&
                 JS_IsAboutToBeFinalized(cur->mPrototypeNoHelper)) {
@@ -429,7 +421,7 @@ XPCWrappedNativeScope::FinishedMarkPhaseOfGC(JSContext* cx, XPCJSRuntime* rt)
 
 // static
 void
-XPCWrappedNativeScope::FinishedFinalizationPhaseOfGC(JSContext* cx)
+XPCWrappedNativeScope::FinishedFinalizationPhaseOfGC()
 {
     XPCJSRuntime* rt = nsXPConnect::GetRuntimeInstance();
 
@@ -653,51 +645,6 @@ GetScopeOfObject(JSObject* obj)
     return ((XPCWrappedNative*)supports)->GetScope();
 }
 
-
-#ifdef DEBUG
-void DEBUG_CheckForComponentsInScope(JSContext* cx, JSObject* obj,
-                                     JSObject* startingObj,
-                                     JSBool OKIfNotInitialized,
-                                     XPCJSRuntime* runtime)
-{
-    if (OKIfNotInitialized)
-        return;
-
-    if (!(JS_GetOptions(cx) & JSOPTION_PRIVATE_IS_NSISUPPORTS))
-        return;
-
-    const char* name = runtime->GetStringName(XPCJSRuntime::IDX_COMPONENTS);
-    jsval prop;
-    if (JS_LookupProperty(cx, obj, name, &prop) && !JSVAL_IS_PRIMITIVE(prop))
-        return;
-
-    // This is pretty much always bad. It usually means that native code is
-    // making a callback to an interface implemented in JavaScript, but the
-    // document where the JS object was created has already been cleared and the
-    // global properties of that document's window are *gone*. Generally this
-    // indicates a problem that should be addressed in the design and use of the
-    // callback code.
-    NS_ERROR("XPConnect is being called on a scope without a 'Components' property!  (stack and details follow)");
-    printf("The current JS stack is:\n");
-    xpc_DumpJSStack(cx, true, true, true);
-
-    printf("And the object whose scope lacks a 'Components' property is:\n");
-    js_DumpObject(startingObj);
-
-    JSObject *p = startingObj;
-    while (js::IsWrapper(p)) {
-        p = js::GetProxyPrivate(p).toObjectOrNull();
-        if (!p)
-            break;
-        printf("which is a wrapper for:\n");
-        js_DumpObject(p);
-    }
-}
-#else
-#define DEBUG_CheckForComponentsInScope(ccx, obj, startingObj, OKIfNotInitialized, runtime) \
-    ((void)0)
-#endif
-
 // static
 XPCWrappedNativeScope*
 XPCWrappedNativeScope::FindInJSObjectScope(JSContext* cx, JSObject* obj,
@@ -721,10 +668,6 @@ XPCWrappedNativeScope::FindInJSObjectScope(JSContext* cx, JSObject* obj,
     JSAutoEnterCompartment ac;
     ac.enterAndIgnoreErrors(cx, obj);
 
-#ifdef DEBUG
-    JSObject *startingObj = obj;
-#endif
-
     obj = JS_GetGlobalForObject(cx, obj);
 
     if (js::GetObjectClass(obj)->flags & JSCLASS_XPCONNECT_GLOBAL) {
@@ -747,7 +690,7 @@ XPCWrappedNativeScope::FindInJSObjectScope(JSContext* cx, JSObject* obj,
         DEBUG_TrackScopeTraversal();
 
         for (XPCWrappedNativeScope* cur = gScopes; cur; cur = cur->mNext) {
-            if (obj == cur->GetGlobalJSObject()) {
+            if (obj == cur->GetGlobalJSObjectPreserveColor()) {
                 found = cur;
                 break;
             }
@@ -756,8 +699,6 @@ XPCWrappedNativeScope::FindInJSObjectScope(JSContext* cx, JSObject* obj,
 
     if (found) {
         // This cannot be called within the map lock!
-        DEBUG_CheckForComponentsInScope(cx, obj, startingObj,
-                                        OKIfNotInitialized, runtime);
         return found;
     }
 
@@ -889,7 +830,7 @@ XPCWrappedNativeScope::DebugDump(PRInt16 depth)
     XPC_LOG_INDENT();
         XPC_LOG_ALWAYS(("mRuntime @ %x", mRuntime));
         XPC_LOG_ALWAYS(("mNext @ %x", mNext));
-        XPC_LOG_ALWAYS(("mComponents @ %x", mComponents));
+        XPC_LOG_ALWAYS(("mComponents @ %x", mComponents.get()));
         XPC_LOG_ALWAYS(("mGlobalJSObject @ %x", mGlobalJSObject.get()));
         XPC_LOG_ALWAYS(("mPrototypeJSObject @ %x", mPrototypeJSObject.get()));
         XPC_LOG_ALWAYS(("mPrototypeNoHelper @ %x", mPrototypeNoHelper));
@@ -955,5 +896,3 @@ XPCWrappedNativeScope::SizeOfIncludingThis(nsMallocSizeOfFun mallocSizeOf)
 
     return n;
 }
-
-

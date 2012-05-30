@@ -1,41 +1,9 @@
 /* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
  * vim: set ts=8 sw=4 et tw=99 ft=cpp:
  *
- * ***** BEGIN LICENSE BLOCK *****
- * Version: MPL 1.1/GPL 2.0/LGPL 2.1
- *
- * The contents of this file are subject to the Mozilla Public License Version
- * 1.1 (the "License"); you may not use this file except in compliance with
- * the License. You may obtain a copy of the License at
- * http://www.mozilla.org/MPL/
- *
- * Software distributed under the License is distributed on an "AS IS" basis,
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
- * for the specific language governing rights and limitations under the
- * License.
- *
- * The Original Code is Mozilla SpiderMonkey JavaScript code.
- *
- * The Initial Developer of the Original Code is
- * the Mozilla Foundation.
- * Portions created by the Initial Developer are Copyright (C) 2011
- * the Initial Developer. All Rights Reserved.
- *
- * Contributor(s):
- *
- * Alternatively, the contents of this file may be used under the terms of
- * either the GNU General Public License Version 2 or later (the "GPL"), or
- * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
- * in which case the provisions of the GPL or the LGPL are applicable instead
- * of those above. If you wish to allow use of your version of this file only
- * under the terms of either the GPL or the LGPL, and not to allow others to
- * use your version of this file under the terms of the MPL, indicate your
- * decision by deleting the provisions above and replace them with the notice
- * and other provisions required by the GPL or the LGPL. If you do not delete
- * the provisions above, a recipient may use your version of this file under
- * the terms of any one of the MPL, the GPL or the LGPL.
- *
- * ***** END LICENSE BLOCK ***** */
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #ifndef js_utility_h__
 #define js_utility_h__
@@ -158,9 +126,20 @@ PrintBacktrace()
         } \
     } while (0)
 
+#  define JS_OOM_POSSIBLY_FAIL_REPORT(cx) \
+    do \
+    { \
+        if (++OOM_counter > OOM_maxAllocations) { \
+            JS_OOM_EMIT_BACKTRACE();\
+            js_ReportOutOfMemory(cx);\
+            return NULL; \
+        } \
+    } while (0)
+
 # else
 #  define JS_OOM_POSSIBLY_FAIL() do {} while(0)
-# endif
+#  define JS_OOM_POSSIBLY_FAIL_REPORT(cx) do {} while(0)
+# endif /* DEBUG */
 
 /*
  * SpiderMonkey code should not be calling these allocation functions directly.
@@ -332,22 +311,6 @@ __BitScanReverse64(unsigned __int64 val)
     JS_END_MACRO
 #endif
 
-/*
- * Internal function.
- * Compute the log of the least power of 2 greater than or equal to n. This is
- * a version of JS_CeilingLog2 that operates on unsigned integers with
- * CPU-dependant size.
- */
-#define JS_CEILING_LOG2W(n) ((n) <= 1 ? 0 : 1 + JS_FLOOR_LOG2W((n) - 1))
-
-/*
- * Internal function.
- * Compute the log of the greatest power of 2 less than or equal to n.
- * This is a version of JS_FloorLog2 that operates on unsigned integers with
- * CPU-dependant size and requires that n != 0.
- */
-#define JS_FLOOR_LOG2W(n) (JS_ASSERT((n) != 0), js_FloorLog2wImpl(n))
-
 #if JS_BYTES_PER_WORD == 4
 # ifdef JS_HAS_BUILTIN_BITSCAN32
 #  define js_FloorLog2wImpl(n)                                                \
@@ -365,6 +328,27 @@ JS_PUBLIC_API(size_t) js_FloorLog2wImpl(size_t n);
 #else
 # error "NOT SUPPORTED"
 #endif
+
+/*
+ * Internal function.
+ * Compute the log of the least power of 2 greater than or equal to n. This is
+ * a version of JS_CeilingLog2 that operates on unsigned integers with
+ * CPU-dependant size.
+ */
+#define JS_CEILING_LOG2W(n) ((n) <= 1 ? 0 : 1 + JS_FLOOR_LOG2W((n) - 1))
+
+/*
+ * Internal function.
+ * Compute the log of the greatest power of 2 less than or equal to n.
+ * This is a version of JS_FloorLog2 that operates on unsigned integers with
+ * CPU-dependant size and requires that n != 0.
+ */
+static MOZ_ALWAYS_INLINE size_t
+JS_FLOOR_LOG2W(size_t n)
+{
+    JS_ASSERT(n != 0);
+    return js_FloorLog2wImpl(n);
+}
 
 JS_END_EXTERN_C
 
@@ -831,7 +815,7 @@ class MoveRef {
     explicit MoveRef(T &t) : pointer(&t) { }
     T &operator*()  const { return *pointer; }
     T *operator->() const { return  pointer; }
-#ifdef __GXX_EXPERIMENTAL_CXX0X__
+#if defined(__GXX_EXPERIMENTAL_CXX0X__) && defined(__clang__)
     /*
      * If MoveRef is used in a rvalue position (which is expected), we can
      * end up in a situation where, without this ifdef, we would try to pass
@@ -898,6 +882,40 @@ RoundUpPow2(size_t x)
 }
 
 } /* namespace js */
+
+namespace JS {
+
+/*
+ * Methods for poisoning GC heap pointer words and checking for poisoned words.
+ * These are in this file for use in Value methods and so forth.
+ *
+ * If the moving GC hazard analysis is in use and detects a non-rooted stack
+ * pointer to a GC thing, one byte of that pointer is poisoned to refer to an
+ * invalid location. For both 32 bit and 64 bit systems, the fourth byte of the
+ * pointer is overwritten, to reduce the likelihood of accidentally changing
+ * a live integer value.
+ */
+
+inline void PoisonPtr(uintptr_t *v)
+{
+#if defined(JSGC_ROOT_ANALYSIS) && defined(DEBUG)
+    uint8_t *ptr = (uint8_t *) v + 3;
+    *ptr = JS_FREE_PATTERN;
+#endif
+}
+
+template <typename T>
+inline bool IsPoisonedPtr(T *v)
+{
+#if defined(JSGC_ROOT_ANALYSIS) && defined(DEBUG)
+    uint32_t mask = uintptr_t(v) & 0xff000000;
+    return mask == uint32_t(JS_FREE_PATTERN << 24);
+#else
+    return false;
+#endif
+}
+
+}
 
 #endif /* defined(__cplusplus) */
 
