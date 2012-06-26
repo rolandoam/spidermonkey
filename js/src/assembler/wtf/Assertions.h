@@ -37,15 +37,16 @@
 #  define ASSERT_DISABLED 1
 #endif
 
+#if 0 //James Chen closed, made it built successfully on win32.
 #define ASSERT(assertion) MOZ_ASSERT(assertion)
 #define ASSERT_UNUSED(variable, assertion) (((void)variable), ASSERT(assertion))
 #define ASSERT_NOT_REACHED() MOZ_NOT_REACHED("")
 #define CRASH() MOZ_Crash()
 #define COMPILE_ASSERT(exp, name) MOZ_STATIC_ASSERT(exp, #name)
-
 #endif
 
-#if 0
+
+#if 1 //James Chen opened, made it built successfully on win32.
 /*
    no namespaces because this file has to be includable from C and Objective-C
 
@@ -278,6 +279,8 @@ while (0)
 #define LOG_VERBOSE(channel, arg...) ((void)0)
 #else
 #define LOG_VERBOSE(channel, ...) WTFLogVerbose(__FILE__, __LINE__, WTF_PRETTY_FUNCTION, &JOIN_LOG_CHANNEL_WITH_PREFIX(LOG_CHANNEL_PREFIX, channel), __VA_ARGS__)
+#endif
+
 #endif
 
 #endif /* WTF_Assertions_h */

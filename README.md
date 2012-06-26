@@ -83,8 +83,15 @@ For an example application that will run JavaScript scripts on your Android devi
 
 Enjoy!
 
+#### Windows (VS2008)
+
+Just double clicks 'js.sln' in 'spidermonkey/js/src/build-win32' folder
+and builds the project. It will create a dynamic library in
+'spidermonkey/js/src/build-win32/Release(or Debug)' folder.
+
 ## Authors and contributors
 
  * @funkaster (iOS)
  * @folecr (Android)
+ * @dumganhar (win32)
  * The Mozilla SpiderMonkey team (duh)

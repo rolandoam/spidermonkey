@@ -970,7 +970,7 @@ JSContext::JSContext(JSRuntime *rt)
     throwing(false),
     exception(UndefinedValue()),
     runOptions(0),
-    reportGranularity(JS_DEFAULT_JITREPORT_GRANULARITY),
+	reportGranularity(Probes::JITREPORT_GRANULARITY_NONE), //James Chen changed JS_DEFAULT_JITREPORT_GRANULARITY to Probes::JITREPORT_GRANULARITY_NONE.
     localeCallbacks(NULL),
     resolvingList(NULL),
     generatingError(false),

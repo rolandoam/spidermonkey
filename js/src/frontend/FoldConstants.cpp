@@ -385,7 +385,7 @@ FoldXMLConstants(JSContext *cx, ParseNode *pn, TreeContext *tc)
 
 #endif /* JS_HAS_XML_SUPPORT */
 
-enum Truthiness { Truthy, Falsy, Unknown };
+enum Truthiness { Truthy, Falsy, TruthUnknown };
 
 static Truthiness
 Boolish(ParseNode *pn)
@@ -406,12 +406,12 @@ Boolish(ParseNode *pn)
          * is needed for the decompiler. See bug 442342 and bug 443074.
          */
         if (pn->pn_count != 1)
-            return Unknown;
+            return TruthUnknown;
         ParseNode *pn2 = pn->pn_head;
         if (!pn2->isKind(PNK_FUNCTION))
-            return Unknown;
+            return TruthUnknown;
         if (!(pn2->pn_funbox->tcflags & TCF_GENEXP_LAMBDA))
-            return Unknown;
+            return TruthUnknown;
         return Truthy;
       }
 #endif
@@ -426,7 +426,7 @@ Boolish(ParseNode *pn)
         return Falsy;
 
       default:
-        return Unknown;
+        return TruthUnknown;
     }
 }
 
