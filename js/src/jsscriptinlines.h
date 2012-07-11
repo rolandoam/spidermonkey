@@ -24,12 +24,12 @@
 namespace js {
 
 inline
-Bindings::Bindings(JSContext *cx)
+Bindings::Bindings()
     : lastBinding(NULL), nargs(0), nvars(0), hasDup_(false)
 {}
 
 inline void
-Bindings::transfer(JSContext *cx, Bindings *bindings)
+Bindings::transfer(Bindings *bindings)
 {
     JS_ASSERT(!lastBinding);
     JS_ASSERT(!bindings->lastBinding || !bindings->lastBinding->inDictionary());
@@ -38,15 +38,6 @@ Bindings::transfer(JSContext *cx, Bindings *bindings)
 #ifdef DEBUG
     bindings->lastBinding = NULL;
 #endif
-}
-
-inline void
-Bindings::clone(JSContext *cx, Bindings *bindings)
-{
-    JS_ASSERT(!lastBinding);
-    JS_ASSERT(!bindings->lastBinding || !bindings->lastBinding->inDictionary());
-
-    *this = *bindings;
 }
 
 Shape *
@@ -61,8 +52,8 @@ Shape *
 Bindings::initialShape(JSContext *cx) const
 {
     /* Get an allocation kind to match an empty call object. */
-    gc::AllocKind kind = gc::FINALIZE_OBJECT4;
-    JS_ASSERT(gc::GetGCKindSlots(kind) == CallObject::RESERVED_SLOTS + 1);
+    gc::AllocKind kind = gc::FINALIZE_OBJECT2_BACKGROUND;
+    JS_ASSERT(gc::GetGCKindSlots(kind) == CallObject::RESERVED_SLOTS);
 
     return EmptyShape::getInitialShape(cx, &CallClass, NULL, NULL, kind,
                                        BaseShape::VAROBJ);
@@ -83,6 +74,30 @@ bool
 Bindings::extensibleParents()
 {
     return lastBinding && lastBinding->extensibleParents();
+}
+
+uint16_t
+Bindings::formalIndexToSlot(uint16_t i)
+{
+    JS_ASSERT(i < nargs);
+    return CallObject::RESERVED_SLOTS + i;
+}
+
+uint16_t
+Bindings::varIndexToSlot(uint16_t i)
+{
+    JS_ASSERT(i < nvars);
+    return CallObject::RESERVED_SLOTS + i + nargs;
+}
+
+unsigned
+Bindings::argumentsVarIndex(JSContext *cx) const
+{
+    PropertyName *arguments = cx->runtime->atomState.argumentsAtom;
+    unsigned i;
+    DebugOnly<BindingKind> kind = lookup(cx, arguments, &i);
+    JS_ASSERT(kind == VARIABLE || kind == CONSTANT);
+    return i;
 }
 
 extern void
@@ -240,7 +255,7 @@ JSScript::writeBarrierPre(JSScript *script)
 
     JSCompartment *comp = script->compartment();
     if (comp->needsBarrier()) {
-        JS_ASSERT(!comp->rt->gcRunning);
+        JS_ASSERT(!comp->rt->isHeapBusy());
         JSScript *tmp = script;
         MarkScriptUnbarriered(comp->barrierTracer(), &tmp, "write barrier");
         JS_ASSERT(tmp == script);

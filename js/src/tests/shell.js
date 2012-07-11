@@ -679,6 +679,7 @@ if (typeof options == 'function')
 {
   optionsInit();
   optionsClear();
+  options("allow_xml");
 }
 
 function getTestCaseResult(expected, actual)
@@ -795,18 +796,6 @@ function getFailedCases() {
     }
   }
 }
-
-var JSTest = {
-  waitForExplicitFinish: function () {
-    gDelayTestDriverEnd = true;
-  },
-
-  testFinished: function () {
-    gDelayTestDriverEnd = false;
-    jsTestDriverEnd();
-    quit();
-  }
-};
 
 function jsTestDriverEnd()
 {

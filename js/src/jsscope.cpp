@@ -58,7 +58,7 @@ ShapeTable::init(JSRuntime *rt, Shape *lastProp)
 
     hashShift = HASH_BITS - sizeLog2;
     for (Shape::Range r = lastProp->all(); !r.empty(); r.popFront()) {
-        const Shape &shape = r.front();
+        Shape &shape = r.front();
         Shape **spp = search(shape.propid(), true);
 
         /*
@@ -289,7 +289,7 @@ Shape::getChildBinding(JSContext *cx, const StackShape &child)
          * the fixed slot count here, which will feed into call objects created
          * off of the bindings.
          */
-        uint32_t slots = child.slotSpan() + 1;  /* Add one for private data. */
+        uint32_t slots = child.slotSpan();
         gc::AllocKind kind = gc::GetGCObjectKind(slots);
 
         /*
@@ -300,11 +300,11 @@ Shape::getChildBinding(JSContext *cx, const StackShape &child)
          */
         uint32_t nfixed = gc::GetGCKindSlots(kind);
         if (nfixed < slots) {
-            nfixed = CallObject::RESERVED_SLOTS + 1;
-            JS_ASSERT(gc::GetGCKindSlots(gc::GetGCObjectKind(nfixed)) == CallObject::RESERVED_SLOTS + 1);
+            nfixed = CallObject::RESERVED_SLOTS;
+            JS_ASSERT(gc::GetGCKindSlots(gc::GetGCObjectKind(nfixed)) == CallObject::RESERVED_SLOTS);
         }
 
-        shape->setNumFixedSlots(nfixed - 1);
+        shape->setNumFixedSlots(nfixed);
     }
     return shape;
 }
@@ -412,9 +412,7 @@ JSObject::toDictionaryMode(JSContext *cx)
     RootedShape root(cx);
     RootedShape dictionaryShape(cx);
 
-    RootedShape shape(cx);
-    shape = lastProperty();
-
+    RootedShape shape(cx, lastProperty());
     while (shape) {
         JS_ASSERT(!shape->inDictionary());
 
@@ -589,7 +587,7 @@ JSObject::addPropertyInternal(JSContext *cx, jsid id_,
  * enforce all restrictions from ECMA-262 v5 8.12.9 [[DefineOwnProperty]].
  */
 inline bool
-CheckCanChangeAttrs(JSContext *cx, JSObject *obj, const Shape *shape, unsigned *attrsp)
+CheckCanChangeAttrs(JSContext *cx, JSObject *obj, Shape *shape, unsigned *attrsp)
 {
     if (shape->configurable())
         return true;
@@ -762,7 +760,7 @@ Shape *
 JSObject::changeProperty(JSContext *cx, Shape *shape, unsigned attrs, unsigned mask,
                          PropertyOp getter, StrictPropertyOp setter)
 {
-    JS_ASSERT(nativeContains(cx, *shape));
+    JS_ASSERT(nativeContainsNoAllocation(*shape));
 
     attrs |= shape->attrs & mask;
 
@@ -804,10 +802,8 @@ JSObject::removeProperty(JSContext *cx, jsid id_)
     RootedId id(cx, id_);
     RootedObject self(cx, this);
 
-    RootedShape shape(cx);
-
     Shape **spp;
-    shape = Shape::search(cx, lastProperty(), id, &spp);
+    RootedShape shape(cx, Shape::search(cx, lastProperty(), id, &spp));
     if (!shape)
         return true;
 
@@ -880,9 +876,9 @@ JSObject::removeProperty(JSContext *cx, jsid id_)
              * checks not to alter significantly the complexity of the
              * delete in debug builds, see bug 534493.
              */
-            const Shape *aprop = self->lastProperty();
+            Shape *aprop = self->lastProperty();
             for (int n = 50; --n >= 0 && aprop->parent; aprop = aprop->parent)
-                JS_ASSERT_IF(aprop != shape, self->nativeContains(cx, *aprop));
+                JS_ASSERT_IF(aprop != shape, self->nativeContainsNoAllocation(*aprop));
 #endif
         }
 
@@ -956,7 +952,7 @@ JSObject::replaceWithNewEquivalentShape(JSContext *cx, Shape *oldShape, Shape *n
 {
     JS_ASSERT_IF(oldShape != lastProperty(),
                  inDictionaryMode() &&
-                 nativeLookup(cx, oldShape->propidRef()) == oldShape);
+                 nativeLookupNoAllocation(oldShape->propidRef()) == oldShape);
 
     JSObject *self = this;
 
@@ -965,7 +961,7 @@ JSObject::replaceWithNewEquivalentShape(JSContext *cx, Shape *oldShape, Shape *n
         RootedShape newRoot(cx, newShape);
         if (!toDictionaryMode(cx))
             return NULL;
-        oldShape = self->lastProperty();
+        oldShape = selfRoot->lastProperty();
         self = selfRoot;
         newShape = newRoot;
     }
@@ -976,7 +972,7 @@ JSObject::replaceWithNewEquivalentShape(JSContext *cx, Shape *oldShape, Shape *n
         newShape = js_NewGCShape(cx);
         if (!newShape)
             return NULL;
-        new (newShape) Shape(oldShape->base()->unowned(), 0);
+        new (newShape) Shape(oldRoot->base()->unowned(), 0);
         self = selfRoot;
         oldShape = oldRoot;
     }
@@ -1010,10 +1006,10 @@ JSObject::shadowingShapeChange(JSContext *cx, const Shape &shape)
     return generateOwnShape(cx);
 }
 
-bool
-JSObject::clearParent(JSContext *cx)
+/* static */ bool
+JSObject::clearParent(JSContext *cx, HandleObject obj)
 {
-    return setParent(cx, RootedObject(cx, this), RootedObject(cx));
+    return setParent(cx, obj, NullPtr());
 }
 
 /* static */ bool
@@ -1293,10 +1289,8 @@ EmptyShape::getInitialShape(JSContext *cx, Class *clasp, JSObject *proto, JSObje
     RootedObject protoRoot(cx, lookup.proto);
     RootedObject parentRoot(cx, lookup.parent);
 
-    Rooted<UnownedBaseShape*> nbase(cx);
-
     StackBaseShape base(clasp, parent, objectFlags);
-    nbase = BaseShape::getUnowned(cx, base);
+    Rooted<UnownedBaseShape*> nbase(cx, BaseShape::getUnowned(cx, base));
     if (!nbase)
         return NULL;
 
@@ -1315,7 +1309,7 @@ EmptyShape::getInitialShape(JSContext *cx, Class *clasp, JSObject *proto, JSObje
 }
 
 void
-NewObjectCache::invalidateEntriesForShape(JSContext *cx, Shape *shape, JSObject *proto)
+NewObjectCache::invalidateEntriesForShape(JSContext *cx, Shape *shape, JSObject *proto_)
 {
     Class *clasp = shape->getObjectClass();
 
@@ -1323,7 +1317,8 @@ NewObjectCache::invalidateEntriesForShape(JSContext *cx, Shape *shape, JSObject 
     if (CanBeFinalizedInBackground(kind, clasp))
         kind = GetBackgroundAllocKind(kind);
 
-    GlobalObject *global = &shape->getObjectParent()->global();
+    Rooted<GlobalObject *> global(cx, &shape->getObjectParent()->global());
+    RootedObject proto(cx, proto_);
     types::TypeObject *type = proto->getNewType(cx);
 
     EntryIndex entry;
@@ -1349,7 +1344,7 @@ EmptyShape::insertInitialShape(JSContext *cx, Shape *shape, JSObject *proto)
 
     /* The new shape had better be rooted at the old one. */
 #ifdef DEBUG
-    const Shape *nshape = shape;
+    Shape *nshape = shape;
     while (!nshape->isEmptyShape())
         nshape = nshape->previous();
     JS_ASSERT(nshape == entry.shape);
@@ -1379,12 +1374,27 @@ JSCompartment::sweepInitialShapeTable()
             if (!IsShapeMarked(&shape) || (proto && !IsObjectMarked(&proto))) {
                 e.removeFront();
             } else {
+#ifdef DEBUG
                 JSObject *parent = shape->getObjectParent();
                 JS_ASSERT(!parent || IsObjectMarked(&parent));
                 JS_ASSERT(parent == shape->getObjectParent());
+#endif
                 InitialShapeEntry newKey(shape, proto);
                 e.rekeyFront(newKey.getLookup(), newKey);
             }
         }
     }
 }
+
+/*
+ * Property lookup hooks on non-native objects are required to return a non-NULL
+ * shape to signify that the property has been found. The actual shape returned
+ * is arbitrary, and it should never be read from. We use the non-native
+ * object's shape_ field, since it is readily available.
+ */
+void
+js::MarkNonNativePropertyFound(HandleObject obj, MutableHandleShape propp)
+{
+    propp.set(obj->lastProperty());
+}
+

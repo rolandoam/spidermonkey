@@ -40,6 +40,30 @@ Debug_SetSlotRangeToCrashOnTouch(HeapSlot *begin, HeapSlot *end)
 
 } // namespace js
 
+inline js::Shape *
+js::ObjectImpl::nativeLookup(JSContext *cx, PropertyId pid)
+{
+    return nativeLookup(cx, pid.asId());
+}
+
+inline js::Shape *
+js::ObjectImpl::nativeLookup(JSContext *cx, PropertyName *name)
+{
+    return nativeLookup(cx, PropertyId(name));
+}
+
+inline js::Shape *
+js::ObjectImpl::nativeLookupNoAllocation(PropertyId pid)
+{
+    return nativeLookupNoAllocation(pid.asId());
+}
+
+inline js::Shape *
+js::ObjectImpl::nativeLookupNoAllocation(PropertyName *name)
+{
+    return nativeLookupNoAllocation(PropertyId(name));
+}
+
 inline bool
 js::ObjectImpl::isExtensible() const
 {
@@ -301,7 +325,7 @@ js::ObjectImpl::readBarrier(ObjectImpl *obj)
 #ifdef JSGC_INCREMENTAL
     JSCompartment *comp = obj->compartment();
     if (comp->needsBarrier()) {
-        MOZ_ASSERT(!comp->rt->gcRunning);
+        MOZ_ASSERT(!comp->rt->isHeapBusy());
         JSObject *tmp = obj->asObjectPtr();
         MarkObjectUnbarriered(comp->barrierTracer(), &tmp, "read barrier");
         MOZ_ASSERT(tmp == obj->asObjectPtr());
@@ -339,7 +363,7 @@ js::ObjectImpl::writeBarrierPre(ObjectImpl *obj)
 
     JSCompartment *comp = obj->compartment();
     if (comp->needsBarrier()) {
-        MOZ_ASSERT(!comp->rt->gcRunning);
+        MOZ_ASSERT(!comp->rt->isHeapBusy());
         JSObject *tmp = obj->asObjectPtr();
         MarkObjectUnbarriered(comp->barrierTracer(), &tmp, "write barrier");
         MOZ_ASSERT(tmp == obj->asObjectPtr());

@@ -41,8 +41,6 @@
 
 /************************************************************************/
 
-#define JS_Assert MOZ_Assert
-
 #ifdef __cplusplus
 namespace JS {
 
@@ -616,6 +614,75 @@ IsPoisonedValue(const Value &v)
 
 /************************************************************************/
 
+/* This is a specialization of the general Handle template in gc/Root.h */
+template <>
+class Handle<Value>
+{
+  public:
+    /*
+     * Construct a handle from an explicitly rooted location. This is the
+     * normal way to create a handle, and normally happens implicitly.
+     */
+    inline Handle(Rooted<Value> &root) {
+        ptr = root.address();
+    }
+
+    /*
+     * This may be called only if the location of the T is guaranteed
+     * to be marked (for some reason other than being a Rooted),
+     * e.g., if it is guaranteed to be reachable from an implicit root.
+     *
+     * Create a Handle from a raw location of a T.
+     */
+    static Handle fromMarkedLocation(const Value *p) {
+        Handle h;
+        h.ptr = p;
+        return h;
+    }
+
+    const Value *address() const { return ptr; }
+    const Value &get() const { return *ptr; }
+    operator const Value &() const { return *ptr; }
+
+    bool operator==(const Handle &h) const { return *ptr == *h.ptr; }
+    bool operator!=(const Handle &h) const { return *ptr != *h.ptr; }
+
+    bool isUndefined() const { return ptr->isUndefined(); }
+    bool isNull() const { return ptr->isNull(); }
+    bool isBoolean() const { return ptr->isBoolean(); }
+    bool isTrue() const { return ptr->isTrue(); }
+    bool isFalse() const { return ptr->isFalse(); }
+    bool isNumber() const { return ptr->isNumber(); }
+    bool isInt32() const { return ptr->isInt32(); }
+    bool isDouble() const { return ptr->isDouble(); }
+    bool isString() const { return ptr->isString(); }
+    bool isObject() const { return ptr->isObject(); }
+    bool isMagic() const { return ptr->isMagic(); }
+    bool isMagic(JSWhyMagic why) const { return ptr->isMagic(why); }
+    bool isGCThing() const { return ptr->isGCThing(); }
+    bool isMarkable() const { return ptr->isMarkable(); }
+
+    bool toBoolean() const { return ptr->toBoolean(); }
+    double toNumber() const { return ptr->toNumber(); }
+    int32_t toInt32() const { return ptr->toInt32(); }
+    double toDouble() const { return ptr->toDouble(); }
+    JSString *toString() const { return ptr->toString(); }
+    JSObject &toObject() const { return ptr->toObject(); }
+    JSObject *toObjectOrNull() const { return ptr->toObjectOrNull(); }
+    void *toGCThing() const { return ptr->toGCThing(); }
+
+#ifdef DEBUG
+    JSWhyMagic whyMagic() const { return ptr->whyMagic(); }
+#endif
+
+  private:
+    Handle() {}
+
+    const Value *ptr;
+};
+
+/************************************************************************/
+
 static JS_ALWAYS_INLINE Value
 NullValue()
 {
@@ -669,6 +736,14 @@ ObjectValue(JSObject &obj)
 {
     Value v;
     v.setObject(obj);
+    return v;
+}
+
+static JS_ALWAYS_INLINE Value
+ObjectValueCrashOnTouch()
+{
+    Value v;
+    v.setObject(*reinterpret_cast<JSObject *>(0x42));
     return v;
 }
 
@@ -1159,6 +1234,8 @@ class AutoVectorRooter : protected AutoGCRooter
     T &operator[](size_t i) { return vector[i]; }
     const T &operator[](size_t i) const { return vector[i]; }
 
+    JS::Handle<T> handleAt(size_t i) const { return JS::Handle<T>::fromMarkedLocation(&vector[i]); }
+
     const T *begin() const { return vector.begin(); }
     T *begin() { return vector.begin(); }
 
@@ -1223,6 +1300,96 @@ class AutoScriptVector : public AutoVectorRooter<JSScript *>
 
     JS_DECL_USE_GUARD_OBJECT_NOTIFIER
 };
+
+class CallReceiver
+{
+  protected:
+#ifdef DEBUG
+    mutable bool usedRval_;
+    void setUsedRval() const { usedRval_ = true; }
+    void clearUsedRval() const { usedRval_ = false; }
+#else
+    void setUsedRval() const {}
+    void clearUsedRval() const {}
+#endif
+    Value *argv_;
+  public:
+    friend CallReceiver CallReceiverFromVp(Value *);
+    friend CallReceiver CallReceiverFromArgv(Value *);
+    Value *base() const { return argv_ - 2; }
+    JSObject &callee() const { JS_ASSERT(!usedRval_); return argv_[-2].toObject(); }
+    Value &calleev() const { JS_ASSERT(!usedRval_); return argv_[-2]; }
+    Value &thisv() const { return argv_[-1]; }
+
+    Value &rval() const {
+        setUsedRval();
+        return argv_[-2];
+    }
+
+    Value *spAfterCall() const {
+        setUsedRval();
+        return argv_ - 1;
+    }
+
+    void setCallee(Value calleev) {
+        clearUsedRval();
+        this->calleev() = calleev;
+    }
+};
+
+JS_ALWAYS_INLINE CallReceiver
+CallReceiverFromArgv(Value *argv)
+{
+    CallReceiver receiver;
+    receiver.clearUsedRval();
+    receiver.argv_ = argv;
+    return receiver;
+}
+
+JS_ALWAYS_INLINE CallReceiver
+CallReceiverFromVp(Value *vp)
+{
+    return CallReceiverFromArgv(vp + 2);
+}
+
+/*****************************************************************************/
+
+class CallArgs : public CallReceiver
+{
+  protected:
+    unsigned argc_;
+  public:
+    friend CallArgs CallArgsFromVp(unsigned, Value *);
+    friend CallArgs CallArgsFromArgv(unsigned, Value *);
+    friend CallArgs CallArgsFromSp(unsigned, Value *);
+    Value &operator[](unsigned i) const { JS_ASSERT(i < argc_); return argv_[i]; }
+    Value *array() const { return argv_; }
+    unsigned length() const { return argc_; }
+    Value *end() const { return argv_ + argc_; }
+    bool hasDefined(unsigned i) const { return i < argc_ && !argv_[i].isUndefined(); }
+};
+
+JS_ALWAYS_INLINE CallArgs
+CallArgsFromArgv(unsigned argc, Value *argv)
+{
+    CallArgs args;
+    args.clearUsedRval();
+    args.argv_ = argv;
+    args.argc_ = argc;
+    return args;
+}
+
+JS_ALWAYS_INLINE CallArgs
+CallArgsFromVp(unsigned argc, Value *vp)
+{
+    return CallArgsFromArgv(argc, vp + 2);
+}
+
+JS_ALWAYS_INLINE CallArgs
+CallArgsFromSp(unsigned argc, Value *sp)
+{
+    return CallArgsFromArgv(argc, sp - argc);
+}
 
 }  /* namespace JS */
 
@@ -1291,6 +1458,7 @@ JS_STATIC_ASSERT(sizeof(jsval_layout) == sizeof(jsval));
 
 typedef JS::Handle<JSObject*> JSHandleObject;
 typedef JS::Handle<jsid> JSHandleId;
+typedef JS::MutableHandle<JSObject*> JSMutableHandleObject;
 
 #else
 
@@ -1300,10 +1468,14 @@ typedef JS::Handle<jsid> JSHandleId;
  */
 
 typedef struct { JSObject **_; } JSHandleObject;
+typedef struct { JSObject **_; } JSMutableHandleObject;
 typedef struct { jsid *_; } JSHandleId;
 
 JSBool JS_CreateHandleObject(JSContext *cx, JSObject *obj, JSHandleObject *phandle);
 void JS_DestroyHandleObject(JSContext *cx, JSHandleObject handle);
+
+JSBool JS_CreateMutableHandleObject(JSContext *cx, JSObject *obj, JSMutableHandleObject *phandle);
+void JS_DestroyMutableHandleObject(JSContext *cx, JSMutableHandleObject handle);
 
 JSBool JS_CreateHandleId(JSContext *cx, jsid id, JSHandleId *phandle);
 void JS_DestroyHandleId(JSContext *cx, JSHandleId handle);
@@ -1396,31 +1568,17 @@ typedef JSBool
  *  JSRESOLVE_QUALIFIED   a qualified property id: obj.id or obj[id], not id
  *  JSRESOLVE_ASSIGNING   obj[id] is on the left-hand side of an assignment
  *  JSRESOLVE_DETECTING   'if (o.p)...' or similar detection opcode sequence
- *  JSRESOLVE_DECLARING   var, const, or function prolog declaration opcode
  *
  * The *objp out parameter, on success, should be null to indicate that id
  * was not resolved; and non-null, referring to obj or one of its prototypes,
- * if id was resolved.
+ * if id was resolved.  The hook may assume *objp is null on entry.
  *
  * This hook instead of JSResolveOp is called via the JSClass.resolve member
  * if JSCLASS_NEW_RESOLVE is set in JSClass.flags.
- *
- * Setting JSCLASS_NEW_RESOLVE and JSCLASS_NEW_RESOLVE_GETS_START further
- * extends this hook by passing in the starting object on the prototype chain
- * via *objp.  Thus a resolve hook implementation may define the property id
- * being resolved in the object in which the id was first sought, rather than
- * in a prototype object whose class led to the resolve hook being called.
- *
- * When using JSCLASS_NEW_RESOLVE_GETS_START, the resolve hook must therefore
- * null *objp to signify "not resolved".  With only JSCLASS_NEW_RESOLVE and no
- * JSCLASS_NEW_RESOLVE_GETS_START, the hook can assume *objp is null on entry.
- * This is not good practice, but enough existing hook implementations count
- * on it that we can't break compatibility by passing the starting object in
- * *objp without a new JSClass flag.
  */
 typedef JSBool
 (* JSNewResolveOp)(JSContext *cx, JSHandleObject obj, JSHandleId id, unsigned flags,
-                   JSObject **objp);
+                   JSMutableHandleObject objp);
 
 /*
  * Convert obj to the given type, returning true with the resulting value in
@@ -1672,16 +1830,6 @@ typedef JSBool
 (* JSCSPEvalChecker)(JSContext *cx);
 
 /*
- * Security callbacks for pushing and popping context principals. These are only
- * temporarily necessary and will hopefully be gone again in a matter of weeks.
- */
-typedef JSBool
-(* JSPushContextPrincipalOp)(JSContext *cx, JSPrincipals *principals);
-
-typedef JSBool
-(* JSPopContextPrincipalOp)(JSContext *cx);
-
-/*
  * Callback used to ask the embedding for the cross compartment wrapper handler
  * that implements the desired prolicy for this kind of object in the
  * destination compartment.
@@ -1870,16 +2018,10 @@ STRING_TO_JSVAL(JSString *str)
     return IMPL_TO_JSVAL(STRING_TO_JSVAL_IMPL(str));
 }
 
-static JS_ALWAYS_INLINE JSBool
-JSVAL_IS_OBJECT(jsval v)
-{
-    return JSVAL_IS_OBJECT_OR_NULL_IMPL(JSVAL_TO_IMPL(v));
-}
-
 static JS_ALWAYS_INLINE JSObject *
 JSVAL_TO_OBJECT(jsval v)
 {
-    JS_ASSERT(JSVAL_IS_OBJECT(v));
+    JS_ASSERT(JSVAL_IS_OBJECT_OR_NULL_IMPL(JSVAL_TO_IMPL(v)));
     return JSVAL_TO_OBJECT_IMPL(JSVAL_TO_IMPL(v));
 }
 
@@ -2730,12 +2872,17 @@ JS_StringToVersion(const char *string);
                                                    option supported for the
                                                    XUL preprocessor and kindred
                                                    beasts. */
-#define JSOPTION_XML            JS_BIT(6)       /* EMCAScript for XML support:
+#define JSOPTION_ALLOW_XML      JS_BIT(6)       /* enable E4X syntax (deprecated)
+                                                   and define the E4X-related
+                                                   globals: XML, XMLList,
+                                                   Namespace, etc. */
+#define JSOPTION_MOAR_XML       JS_BIT(7)       /* enable E4X even in versions
+                                                   that don't normally get it;
                                                    parse <!-- --> as a token,
                                                    not backward compatible with
                                                    the comment-hiding hack used
                                                    in HTML script tags. */
-#define JSOPTION_DONT_REPORT_UNCAUGHT \
+#define JSOPTION_DONT_REPORT_UNCAUGHT                                   \
                                 JS_BIT(8)       /* When returning from the
                                                    outermost API call, prevent
                                                    uncaught exceptions from
@@ -2777,7 +2924,7 @@ JS_StringToVersion(const char *string);
                                                    "use strict" annotations. */
 
 /* Options which reflect compile-time properties of scripts. */
-#define JSCOMPILEOPTION_MASK    (JSOPTION_XML)
+#define JSCOMPILEOPTION_MASK    (JSOPTION_ALLOW_XML | JSOPTION_MOAR_XML)
 
 #define JSRUNOPTION_MASK        (JS_BITMASK(20) & ~JSCOMPILEOPTION_MASK)
 #define JSALLOPTION_MASK        (JSCOMPILEOPTION_MASK | JSRUNOPTION_MASK)
@@ -2885,6 +3032,13 @@ class JS_PUBLIC_API(JSAutoEnterCompartment)
 
     bool entered() const { return state != STATE_UNENTERED; }
 
+    /*
+     * In general, consumers should try to avoid calling leave() explicitly,
+     * and defer to the destructor by scoping the JSAutoEnterCompartment
+     * appropriately. Sometimes, though, it's unavoidable.
+     */
+    void leave();
+
     ~JSAutoEnterCompartment();
 };
 
@@ -2967,6 +3121,13 @@ JS_GetObjectPrototype(JSContext *cx, JSObject *forObj);
 
 extern JS_PUBLIC_API(JSObject *)
 JS_GetGlobalForObject(JSContext *cx, JSObject *obj);
+
+/*
+ * May return NULL, if |c| never had a global (e.g. the atoms compartment), or
+ * if |c|'s global has been collected.
+ */
+extern JS_PUBLIC_API(JSObject *)
+JS_GetGlobalForCompartmentOrNull(JSContext *cx, JSCompartment *c);
 
 extern JS_PUBLIC_API(JSObject *)
 JS_GetGlobalForScopeChain(JSContext *cx);
@@ -3346,7 +3507,7 @@ JSVAL_TRACE_KIND(jsval v)
  * kind argument is one of JSTRACE_OBJECT, JSTRACE_STRING or a tag denoting
  * internal implementation-specific traversal kind. In the latter case the only
  * operations on thing that the callback can do is to call JS_TraceChildren or
- * DEBUG-only JS_PrintTraceThingInfo.
+ * JS_GetTraceThingInfo.
  *
  * If eagerlyTraceWeakMaps is true, when we trace a WeakMap visit all
  * of its mappings.  This should be used in cases where the tracer
@@ -3476,14 +3637,14 @@ JS_TraceChildren(JSTracer *trc, void *thing, JSGCTraceKind kind);
 extern JS_PUBLIC_API(void)
 JS_TraceRuntime(JSTracer *trc);
 
-#ifdef DEBUG
-
 extern JS_PUBLIC_API(void)
-JS_PrintTraceThingInfo(char *buf, size_t bufsize, JSTracer *trc,
-                       void *thing, JSGCTraceKind kind, JSBool includeDetails);
+JS_GetTraceThingInfo(char *buf, size_t bufsize, JSTracer *trc,
+                     void *thing, JSGCTraceKind kind, JSBool includeDetails);
 
 extern JS_PUBLIC_API(const char *)
 JS_GetTraceEdgeName(JSTracer *trc, char *buffer, int bufferSize);
+
+#ifdef DEBUG
 
 /*
  * DEBUG-only method to dump the object graph of heap-allocated things.
@@ -3649,10 +3810,7 @@ struct JSClass {
 #define JSCLASS_NEW_ENUMERATE           (1<<1)  /* has JSNewEnumerateOp hook */
 #define JSCLASS_NEW_RESOLVE             (1<<2)  /* has JSNewResolveOp hook */
 #define JSCLASS_PRIVATE_IS_NSISUPPORTS  (1<<3)  /* private is (nsISupports *) */
-#define JSCLASS_NEW_RESOLVE_GETS_START  (1<<4)  /* JSNewResolveOp gets starting
-                                                   object in prototype chain
-                                                   passed in via *objp in/out
-                                                   parameter */
+/* (1<<4) is unused */
 #define JSCLASS_IMPLEMENTS_BARRIERS     (1<<5)  /* Correctly implements GC read
                                                    and write barriers */
 #define JSCLASS_DOCUMENT_OBSERVER       (1<<6)  /* DOM document observer */
@@ -3811,8 +3969,6 @@ JS_IdToValue(JSContext *cx, jsid id, jsval *vp);
 #define JSRESOLVE_QUALIFIED     0x01    /* resolve a qualified property id */
 #define JSRESOLVE_ASSIGNING     0x02    /* resolve on the left of assignment */
 #define JSRESOLVE_DETECTING     0x04    /* 'if (o.p)...' or '(o.p) ?...:...' */
-#define JSRESOLVE_DECLARING     0x08    /* var, const, or function prolog op */
-#define JSRESOLVE_WITH          0x10    /* resolve inside a with statement */
 
 /*
  * Invoke the [[DefaultValue]] hook (see ES5 8.6.2) with the provided hint on
@@ -3937,10 +4093,7 @@ extern JS_PUBLIC_API(JSBool)
 JS_GetObjectId(JSContext *cx, JSObject *obj, jsid *idp);
 
 extern JS_PUBLIC_API(JSObject *)
-JS_NewGlobalObject(JSContext *cx, JSClass *clasp);
-
-extern JS_PUBLIC_API(JSObject *)
-JS_NewCompartmentAndGlobalObject(JSContext *cx, JSClass *clasp, JSPrincipals *principals);
+JS_NewGlobalObject(JSContext *cx, JSClass *clasp, JSPrincipals *principals);
 
 extern JS_PUBLIC_API(JSObject *)
 JS_NewObject(JSContext *cx, JSClass *clasp, JSObject *proto, JSObject *parent);
@@ -3976,13 +4129,6 @@ JS_DeepFreezeObject(JSContext *cx, JSObject *obj);
  */
 extern JS_PUBLIC_API(JSBool)
 JS_FreezeObject(JSContext *cx, JSObject *obj);
-
-extern JS_PUBLIC_API(JSObject *)
-JS_ConstructObject(JSContext *cx, JSClass *clasp, JSObject *parent);
-
-extern JS_PUBLIC_API(JSObject *)
-JS_ConstructObjectWithArguments(JSContext *cx, JSClass *clasp, JSObject *parent,
-                                unsigned argc, jsval *argv);
 
 extern JS_PUBLIC_API(JSObject *)
 JS_New(JSContext *cx, JSObject *ctor, unsigned argc, jsval *argv);
@@ -4358,8 +4504,6 @@ struct JSSecurityCallbacks {
     JSSubsumePrincipalsOp      subsumePrincipals;
     JSObjectPrincipalsFinder   findObjectPrincipals;
     JSCSPEvalChecker           contentSecurityPolicyAllows;
-    JSPushContextPrincipalOp   pushContextPrincipal;
-    JSPopContextPrincipalOp    popContextPrincipal;
 };
 
 extern JS_PUBLIC_API(void)
@@ -4473,6 +4617,66 @@ JS_DefineFunctionById(JSContext *cx, JSObject *obj, jsid id, JSNative call,
 
 extern JS_PUBLIC_API(JSObject *)
 JS_CloneFunctionObject(JSContext *cx, JSObject *funobj, JSObject *parent);
+
+/*
+ * Methods usually act upon |this| objects only from a single global object and
+ * compartment.  Sometimes, however, a method must act upon |this| values from
+ * multiple global objects or compartments.  In such cases the |this| value a
+ * method might see will be wrapped, such that various access to the object --
+ * to its class, its private data, its reserved slots, and so on -- will not
+ * work properly without entering that object's compartment.  This method
+ * implements a solution to this problem.
+ *
+ * When called, this method attempts to unwrap |this| and call |native| on the
+ * underlying object with the provided arguments, entering |this|'s compartment
+ * in the process.  It is critical that |this|-checking occur right at the
+ * start of |native| so that reentrant invocation is idempotent!  If the call
+ * fails because |this| isn't a proxy to another object, a TypeError is thrown.
+ *
+ * The following example demonstrates the most common way this method might be
+ * used, to accept objects having only a particular class but which might be
+ * found in another compartment/global object or might be a proxy of some sort:
+ *
+ *     static JSClass MyClass = { "MyClass", JSCLASS_HAS_PRIVATE, ... };
+ *
+ *     inline bool
+ *     RequireMyClassThis(JSContext *cx, unsigned argc, JSObject **thisObj)
+ *     {
+ *         const Value &thisv = JS_THIS_VALUE(cx, vp);
+ *         if (!thisv.isObject()) {
+ *             JS_ReportError(cx, "this must be an object");
+ *             return false;
+ *         }
+ *
+ *         JSObject *obj = &thisv.toObject();
+ *         if (JS_GetClass(obj) == &MyClass) {
+ *             *thisObj = obj;
+ *             return true;
+ *         }
+ *
+ *         *thisObj = NULL; // prevent infinite recursion into calling method
+ *         return JS_CallNonGenericMethodOnProxy(cx, argc, vp, method, &MyClass);
+ *     }
+ *
+ *     static JSBool
+ *     Method(JSContext *cx, unsigned argc, jsval *vp)
+ *     {
+ *         if (!RequireMyClassThis(cx, argc, vp, &thisObj))
+ *             return false;
+ *         if (!thisObj)
+ *             return true; // method invocation was performed by nested call
+ *
+ *         // thisObj definitely has MyClass: implement the guts of the method.
+ *         void *priv = JS_GetPrivate(thisObj);
+ *         ...
+ *     }
+ *
+ * This method doesn't do any checking of its own, except to throw a TypeError
+ * if the |this| in the arguments isn't a proxy that can be unwrapped for the
+ * recursive call.  The client is responsible for performing all type-checks!
+ */
+extern JS_PUBLIC_API(JSBool)
+JS_CallNonGenericMethodOnProxy(JSContext *cx, unsigned argc, jsval *vp, JSNative native, JSClass *clasp);
 
 /*
  * Given a buffer, return JS_FALSE if the buffer might become a valid
@@ -5630,10 +5834,6 @@ extern JS_PUBLIC_API(JSObject *)
 JS_NewObjectForConstructor(JSContext *cx, JSClass *clasp, const jsval *vp);
 
 /************************************************************************/
-
-#ifdef DEBUG
-#define JS_GC_ZEAL 1
-#endif
 
 #ifdef JS_GC_ZEAL
 #define JS_DEFAULT_ZEAL_FREQ 100

@@ -960,7 +960,10 @@ mjit::Compiler::jsop_arginc(JSOp op, uint32_t slot)
     if (!analysis->incrementInitialValueObserved(PC)) {
         // Before:
         // After:  V
-        frame.pushArg(slot);
+        if (script->argsObjAliasesFormals())
+            jsop_aliasedArg(slot, /* get = */ true);
+        else
+            frame.pushArg(slot);
 
         // Before: V
         // After:  V 1
@@ -974,11 +977,18 @@ mjit::Compiler::jsop_arginc(JSOp op, uint32_t slot)
 
         // Before: N+1
         // After:  N+1
-        frame.storeArg(slot, analysis->popGuaranteed(PC));
+        bool popGuaranteed = analysis->popGuaranteed(PC);
+        if (script->argsObjAliasesFormals())
+            jsop_aliasedArg(slot, /* get = */ false, popGuaranteed);
+        else
+            frame.storeArg(slot, popGuaranteed);
     } else {
         // Before:
         // After: V
-        frame.pushArg(slot);
+        if (script->argsObjAliasesFormals())
+            jsop_aliasedArg(slot, /* get = */ true);
+        else
+            frame.pushArg(slot);
 
         // Before: V
         // After:  N
@@ -999,7 +1009,10 @@ mjit::Compiler::jsop_arginc(JSOp op, uint32_t slot)
 
         // Before: N N+1
         // After:  N N+1
-        frame.storeArg(slot, true);
+        if (script->argsObjAliasesFormals())
+            jsop_aliasedArg(slot, /* get = */ false, true);
+        else
+            frame.storeArg(slot, true);
 
         // Before: N N+1
         // After:  N
@@ -1414,6 +1427,22 @@ mjit::Compiler::jsop_setelem_typed(int atype)
         FrameEntry *slotsFe = loop->invariantArraySlots(objv);
         objReg = frame.tempRegForData(slotsFe);
         frame.pinReg(objReg);
+    } else if (obj->isConstant()) {
+        JSObject *array = &obj->getValue().toObject();
+        int32_t length = (int32_t) TypedArray::length(array);
+        void *data = TypedArray::viewData(array);
+
+        objReg = frame.allocReg();
+
+        if (key.isConstant()) {
+            if (key.index() >= length)
+                stubcc.linkExit(masm.jump(), Uses(2));
+        } else {
+            Jump lengthGuard = masm.branch32(Assembler::AboveOrEqual, key.reg(), Imm32(length));
+            stubcc.linkExit(lengthGuard, Uses(2));
+        }
+
+        masm.move(ImmPtr(data), objReg);
     } else {
         objReg = frame.copyDataIntoReg(obj);
 
@@ -1506,8 +1535,6 @@ mjit::Compiler::jsop_setelem(bool popGuaranteed)
         return true;
     }
 
-    frame.forgetMismatchedObject(obj);
-
     // If the object is definitely a dense array or a typed array we can generate
     // code directly without using an inline cache.
     if (cx->typeInferenceEnabled()) {
@@ -1532,6 +1559,8 @@ mjit::Compiler::jsop_setelem(bool popGuaranteed)
         }
 #endif
     }
+
+    frame.forgetMismatchedObject(obj);
 
     if (id->isType(JSVAL_TYPE_DOUBLE) || !globalObj) {
         jsop_setelem_slow();
@@ -1998,6 +2027,22 @@ mjit::Compiler::jsop_getelem_typed(int atype)
         FrameEntry *slotsFe = loop->invariantArraySlots(objv);
         objReg = frame.tempRegForData(slotsFe);
         frame.pinReg(objReg);
+    } else if (obj->isConstant()) {
+        JSObject *array = &obj->getValue().toObject();
+        int32_t length = (int32_t) TypedArray::length(array);
+        void *data = TypedArray::viewData(array);
+
+        objReg = frame.allocReg();
+
+        if (key.isConstant()) {
+            if (key.index() >= length)
+                stubcc.linkExit(masm.jump(), Uses(2));
+        } else {
+            Jump lengthGuard = masm.branch32(Assembler::AboveOrEqual, key.reg(), Imm32(length));
+            stubcc.linkExit(lengthGuard, Uses(2));
+        }
+
+        masm.move(ImmPtr(data), objReg);
     } else {
         objReg = frame.copyDataIntoReg(obj);
 
@@ -2467,7 +2512,6 @@ mjit::Compiler::jsop_stricteq(JSOp op)
         JS_ASSERT(reg2 != tmpReg);
 
         /* JSString::isAtom === (lengthAndFlags & ATOM_MASK == 0) */
-        JS_STATIC_ASSERT(JSString::ATOM_FLAGS == 0);
         Imm32 atomMask(JSString::ATOM_MASK);
 
         masm.load32(Address(reg1, JSString::offsetOfLengthAndFlags()), tmpReg);
@@ -2641,19 +2685,18 @@ mjit::Compiler::jsop_initprop()
         return;
     }
 
-    JSObject *holder;
-    JSProperty *prop = NULL;
+    RootedObject holder(cx);
+    RootedShape shape(cx);
+    Rooted<jsid> id(cx, NameToId(name));
 #ifdef DEBUG
     bool res =
 #endif
-    LookupPropertyWithFlags(cx, baseobj, RootedId(cx, NameToId(name)),
-                            JSRESOLVE_QUALIFIED, &holder, &prop);
-    JS_ASSERT(res && prop && holder == baseobj);
+    LookupPropertyWithFlags(cx, baseobj, id, JSRESOLVE_QUALIFIED, &holder, &shape);
+    JS_ASSERT(res && shape && holder == baseobj);
 
     RegisterID objReg = frame.copyDataIntoReg(obj);
 
     /* Perform the store. */
-    Shape *shape = (Shape *) prop;
     Address address = masm.objPropAddress(baseobj, objReg, shape->slot());
     frame.storeTo(fe, address);
     frame.freeReg(objReg);

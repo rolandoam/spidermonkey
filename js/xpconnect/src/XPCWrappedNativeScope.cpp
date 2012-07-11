@@ -223,9 +223,9 @@ XPCWrappedNativeScope::SetGlobal(XPCCallContext& ccx, JSObject* aGlobal,
             // Our global has an nsISupports native pointer.  Let's
             // see whether it's what we want.
             priv = static_cast<nsISupports*>(xpc_GetJSPrivate(aGlobal));
-        } else if ((jsClass->flags & JSCLASS_IS_DOMJSCLASS) &&
+        } else if (dom::IsDOMClass(jsClass) &&
                    dom::DOMJSClass::FromJSClass(jsClass)->mDOMObjectIsISupports) {
-            priv = dom::UnwrapDOMObject<nsISupports>(aGlobal, jsClass);
+            priv = dom::UnwrapDOMObject<nsISupports>(aGlobal);
         } else {
             priv = nsnull;
         }
@@ -319,18 +319,15 @@ WrappedNativeJSGCThingTracer(JSDHashTable *table, JSDHashEntryHdr *hdr,
                              uint32_t number, void *arg)
 {
     XPCWrappedNative* wrapper = ((Native2WrappedNativeMap::Entry*)hdr)->value;
-    if (wrapper->HasExternalReference() && !wrapper->IsWrapperExpired()) {
-        JSTracer* trc = (JSTracer *)arg;
-        JS_CALL_OBJECT_TRACER(trc, wrapper->GetFlatJSObjectPreserveColor(),
-                              "XPCWrappedNative::mFlatJSObject");
-    }
+    if (wrapper->HasExternalReference() && !wrapper->IsWrapperExpired())
+        wrapper->TraceSelf((JSTracer *)arg);
 
     return JS_DHASH_NEXT;
 }
 
 // static
 void
-XPCWrappedNativeScope::TraceJS(JSTracer* trc, XPCJSRuntime* rt)
+XPCWrappedNativeScope::TraceWrappedNativesInAllScopes(JSTracer* trc, XPCJSRuntime* rt)
 {
     // FIXME The lock may not be necessary during tracing as that serializes
     // access to JS runtime. See bug 380139.
@@ -583,7 +580,9 @@ XPCWrappedNativeScope::SystemIsBeingShutDown()
     }
     gScopes = nsnull;
 
-    // Walk the unified dying list and call shutdown on all wrappers and protos
+    // We're forcibly killing scopes, rather than allowing them to go away
+    // when they're ready. As such, we need to do some cleanup before they
+    // can safely be destroyed.
 
     for (cur = gDyingScopes; cur; cur = cur->mNext) {
         // Give the Components object a chance to try to clean up.
@@ -598,6 +597,18 @@ XPCWrappedNativeScope::SystemIsBeingShutDown()
                 Enumerate(WrappedNativeProtoShutdownEnumerator,  &data);
         cur->mWrappedNativeMap->
                 Enumerate(WrappedNativeShutdownEnumerator,  &data);
+
+        // Since we're not gating the scope destruction on the finalization
+        // of the JS global in this case, it might stick around. And if it
+        // gets later on (or otherwise triggers an access to the scope), we'll
+        // crash. Null it out.
+        JSObject *global = cur->mGlobalJSObject;
+        if (global &&
+            js::GetObjectClass(global)->flags & JSCLASS_XPCONNECT_GLOBAL)
+        {
+            JS_SetReservedSlot(global, JSCLASS_GLOBAL_SLOT_COUNT,
+                               PRIVATE_TO_JSVAL(nsnull));
+        }
     }
 
     // Now it is safe to kill all the scopes.

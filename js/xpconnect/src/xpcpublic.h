@@ -22,6 +22,7 @@
 #include "nsStringGlue.h"
 #include "nsTArray.h"
 #include "mozilla/dom/DOMJSClass.h"
+#include "nsMathUtils.h"
 
 class nsIPrincipal;
 class nsIXPConnectWrappedJS;
@@ -74,13 +75,21 @@ DebugCheckWrapperClass(JSObject* obj)
 // a slim wrapper, holding a native in its private slot, or a wrappednative
 // wrapper, holding the XPCWrappedNative in its private slot. A slim wrapper
 // also holds a pointer to its XPCWrappedNativeProto in a reserved slot, we can
-// check that slot for a non-void value to distinguish between the two.
+// check that slot for a private value (i.e. a double) to distinguish between
+// the two. This allows us to store a JSObject in that slot for non-slim wrappers
+// while still being able to distinguish the two cases.
+
+// NB: This slot isn't actually reserved for us on globals, because SpiderMonkey
+// uses the first N slots on globals internally. The fact that we use it for
+// wrapped global objects is totally broken. But due to a happy coincidence, the
+// JS engine never uses that slot. This still needs fixing though. See bug 760095.
+#define WRAPPER_MULTISLOT 0
 
 // Only use these macros if IS_WRAPPER_CLASS(GetObjectClass(obj)) is true.
 #define IS_WN_WRAPPER_OBJECT(obj)                                             \
-    (DebugCheckWrapperClass(obj) && js::GetReservedSlot(obj, 0).isUndefined())
+    (DebugCheckWrapperClass(obj) && !js::GetReservedSlot(obj, WRAPPER_MULTISLOT).isDouble())
 #define IS_SLIM_WRAPPER_OBJECT(obj)                                           \
-    (DebugCheckWrapperClass(obj) && !js::GetReservedSlot(obj, 0).isUndefined())
+    (DebugCheckWrapperClass(obj) && js::GetReservedSlot(obj, WRAPPER_MULTISLOT).isDouble())
 
 // Use these macros if IS_WRAPPER_CLASS(GetObjectClass(obj)) might be false.
 // Avoid calling them if IS_WRAPPER_CLASS(GetObjectClass(obj)) can only be
@@ -211,6 +220,8 @@ class nsIMemoryMultiReporterCallback;
 
 namespace xpc {
 
+bool DeferredRelease(nsISupports *obj);
+
 // If these functions return false, then an exception will be set on cx.
 bool Base64Encode(JSContext *cx, JS::Value val, JS::Value *out);
 bool Base64Decode(JSContext *cx, JS::Value val, JS::Value *out);
@@ -225,9 +236,7 @@ bool NonVoidStringToJsval(JSContext *cx, nsAString &str, JS::Value *rval);
 
 nsIPrincipal *GetCompartmentPrincipal(JSCompartment *compartment);
 
-#ifdef DEBUG
 void DumpJSHeap(FILE* file);
-#endif
 
 void SetLocationForGlobal(JSObject *global, const nsACString& location);
 void SetLocationForGlobal(JSObject *global, nsIURI *locationURI);
@@ -257,9 +266,9 @@ DOM_DefineQuickStubs(JSContext *cx, JSObject *proto, PRUint32 flags,
 // (which isn't all of them).
 nsresult
 ReportJSRuntimeExplicitTreeStats(const JS::RuntimeStats &rtStats,
-                                 const nsACString &pathPrefix,
+                                 const nsACString &rtPath,
                                  nsIMemoryMultiReporterCallback *cb,
-                                 nsISupports *closure);
+                                 nsISupports *closure, size_t *rtTotal = NULL);
 
 /**
  * Convert a jsval to PRInt64. Return true on success.
@@ -276,7 +285,12 @@ ValueToInt64(JSContext *cx, JS::Value v, int64_t *result)
         double doubleval;
         if (!JS_ValueToNumber(cx, v, &doubleval))
             return false;
-        *result = static_cast<int64_t>(doubleval);
+        // Be careful with non-finite doubles
+        if (NS_finite(doubleval))
+            // XXXbz this isn't quite right either; need to do the mod thing
+            *result = static_cast<int64_t>(doubleval);
+        else
+            *result = 0;
     }
     return true;
 }
@@ -296,7 +310,12 @@ ValueToUint64(JSContext *cx, JS::Value v, uint64_t *result)
         double doubleval;
         if (!JS_ValueToNumber(cx, v, &doubleval))
             return false;
-        *result = static_cast<uint64_t>(doubleval);
+        // Be careful with non-finite doubles
+        if (NS_finite(doubleval))
+            // XXXbz this isn't quite right either; need to do the mod thing
+            *result = static_cast<uint64_t>(doubleval);
+        else
+            *result = 0;
     }
     return true;
 }
@@ -321,6 +340,9 @@ bool
 Throw(JSContext *cx, nsresult rv);
 
 } // namespace xpc
+
+nsCycleCollectionParticipant *
+xpc_JSCompartmentParticipant();
 
 namespace mozilla {
 namespace dom {

@@ -1056,10 +1056,6 @@ mjit::EnterMethodJIT(JSContext *cx, StackFrame *fp, void *code, Value *stackLimi
         fp->markReturnValue();
     }
 
-    /* See comment in mjit::Compiler::emitReturn. */
-    if (fp->isFunctionFrame())
-        fp->updateEpilogueFlags();
-
     return ok ? Jaeger_Returned : Jaeger_Throwing;
 }
 
@@ -1430,10 +1426,12 @@ JSScript::ReleaseCode(FreeOp *fop, JITScriptHandle *jith)
     // will get called again when the script is destroyed, so we
     // must protect against calling ReleaseScriptCode twice.
 
-    JITScript *jit = jith->getValid();
-    jit->destroy(fop);
-    fop->free_(jit);
-    jith->setEmpty();
+    if (jith->isValid()) {
+        JITScript *jit = jith->getValid();
+        jit->destroy(fop);
+        fop->free_(jit);
+        jith->setEmpty();
+    }
 }
 
 #ifdef JS_METHODJIT_PROFILE_STUBS

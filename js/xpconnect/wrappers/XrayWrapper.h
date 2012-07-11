@@ -27,6 +27,8 @@ namespace XrayUtils {
 
 extern JSClass HolderClass;
 
+bool CloneExpandoChain(JSContext *cx, JSObject *src, JSObject *dst);
+
 JSObject *createHolder(JSContext *cx, JSObject *wrappedNative, JSObject *parent);
 
 bool
@@ -84,9 +86,9 @@ class XrayWrapper : public Base {
 typedef XrayWrapper<js::CrossCompartmentWrapper, ProxyXrayTraits > XrayProxy;
 typedef XrayWrapper<js::CrossCompartmentWrapper, DOMXrayTraits > XrayDOM;
 
-class SandboxProxyHandler : public js::AbstractWrapper {
+class SandboxProxyHandler : public js::IndirectWrapper {
 public:
-    SandboxProxyHandler() : js::AbstractWrapper(0)
+    SandboxProxyHandler() : js::IndirectWrapper(0)
     {
     }
 

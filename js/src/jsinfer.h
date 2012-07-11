@@ -9,6 +9,8 @@
 #ifndef jsinfer_h___
 #define jsinfer_h___
 
+#include "mozilla/Attributes.h"
+
 #include "jsalloc.h"
 #include "jsfriendapi.h"
 #include "jsprvtd.h"
@@ -23,6 +25,9 @@ struct TypeInferenceSizes;
 }
 
 namespace js {
+
+class CallObject;
+
 namespace types {
 
 /* Type set entry for either a JSObject with singleton type or a non-singleton TypeObject. */
@@ -463,9 +468,6 @@ class TypeSet
     /* Get the single value which can appear in this type set, otherwise NULL. */
     JSObject *getSingleton(JSContext *cx, bool freeze = true);
 
-    /* Whether all objects in this set are parented to a particular global. */
-    bool hasGlobalObject(JSContext *cx, JSObject *global);
-
     inline void clearObjects();
 
     /*
@@ -869,7 +871,7 @@ UseNewType(JSContext *cx, JSScript *script, jsbytecode *pc);
 
 /* Whether to use a new type object for an initializer opcode at script/pc. */
 bool
-UseNewTypeForInitializer(JSContext *cx, JSScript *script, jsbytecode *pc);
+UseNewTypeForInitializer(JSContext *cx, JSScript *script, jsbytecode *pc, JSProtoKey key);
 
 /*
  * Whether Array.prototype, or an object on its proto chain, has an
@@ -961,7 +963,7 @@ struct TypeScriptNesting
     JSScript *next;
 
     /* If this is an outer function, the most recent activation. */
-    JSObject *activeCall;
+    CallObject *activeCall;
 
     /*
      * If this is an outer function, pointers to the most recent activation's
@@ -1204,7 +1206,7 @@ struct TypeCompartment
                               JSProtoKey kind, JSObject *proto, bool unknown = false);
 
     /* Make an object for an allocation site. */
-    TypeObject *newAllocationSiteTypeObject(JSContext *cx, const AllocationSiteKey &key);
+    TypeObject *newAllocationSiteTypeObject(JSContext *cx, AllocationSiteKey key);
 
     void nukeTypes(FreeOp *fop);
     void processPendingRecompiles(FreeOp *fop);
@@ -1259,13 +1261,9 @@ inline const char * TypeObjectString(TypeObject *type) { return NULL; }
 #endif
 
 /* Print a warning, dump state and abort the program. */
-void TypeFailure(JSContext *cx, const char *fmt, ...);
+MOZ_NORETURN void TypeFailure(JSContext *cx, const char *fmt, ...);
 
 } /* namespace types */
 } /* namespace js */
-
-namespace JS {
-    template<> class AnchorPermitted<js::types::TypeObject *> { };
-}
 
 #endif // jsinfer_h___

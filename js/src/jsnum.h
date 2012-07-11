@@ -44,9 +44,6 @@ extern const char js_parseInt_str[];
 class JSString;
 class JSFixedString;
 
-extern JSString * JS_FASTCALL
-js_IntToString(JSContext *cx, int i);
-
 /*
  * When base == 10, this function implements ToString() as specified by
  * ECMA-262-5 section 9.8.1; but note that it handles integers specially for
@@ -56,6 +53,9 @@ extern JSString * JS_FASTCALL
 js_NumberToString(JSContext *cx, double d);
 
 namespace js {
+
+extern JSFixedString *
+Int32ToString(JSContext *cx, int32_t i);
 
 /*
  * Convert an integer or double (contained in the given value) to a string and
@@ -126,12 +126,20 @@ GetPrefixInteger(JSContext *cx, const jschar *start, const jschar *end, int base
 JS_ALWAYS_INLINE bool
 ToNumber(JSContext *cx, Value *vp)
 {
+#ifdef DEBUG
+    {
+        SkipRoot skip(cx, vp);
+        MaybeCheckStackRoots(cx);
+    }
+#endif
+
     if (vp->isNumber())
         return true;
     double d;
     extern bool ToNumberSlow(JSContext *cx, js::Value v, double *dp);
     if (!ToNumberSlow(cx, *vp, &d))
         return false;
+
     vp->setNumber(d);
     return true;
 }
@@ -145,6 +153,13 @@ ToNumber(JSContext *cx, Value *vp)
 JS_ALWAYS_INLINE bool
 ToUint32(JSContext *cx, const js::Value &v, uint32_t *out)
 {
+#ifdef DEBUG
+    {
+        SkipRoot skip(cx, &v);
+        MaybeCheckStackRoots(cx);
+    }
+#endif
+
     if (v.isInt32()) {
         *out = (uint32_t)v.toInt32();
         return true;
@@ -161,6 +176,13 @@ ToUint32(JSContext *cx, const js::Value &v, uint32_t *out)
 JS_ALWAYS_INLINE bool
 ValueToUint16(JSContext *cx, const js::Value &v, uint16_t *out)
 {
+#ifdef DEBUG
+    {
+        SkipRoot skip(cx, &v);
+        MaybeCheckStackRoots(cx);
+    }
+#endif
+
     if (v.isInt32()) {
         *out = uint16_t(v.toInt32());
         return true;
@@ -233,6 +255,13 @@ IsDefinitelyIndex(const Value &v, uint32_t *indexp)
 static inline bool
 ToInteger(JSContext *cx, const js::Value &v, double *dp)
 {
+#ifdef DEBUG
+    {
+        SkipRoot skip(cx, &v);
+        MaybeCheckStackRoots(cx);
+    }
+#endif
+
     if (v.isInt32()) {
         *dp = v.toInt32();
         return true;

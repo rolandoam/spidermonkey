@@ -27,10 +27,9 @@
 #include "nsIServiceManager.h"
 #include "nsIComponentManager.h"
 #include "nsIComponentRegistrar.h"
-#include "nsILocalFile.h"
+#include "nsIFile.h"
 #include "nsStringAPI.h"
 #include "nsIDirectoryService.h"
-#include "nsILocalFile.h"
 #include "nsDirectoryServiceDefs.h"
 #include "nsAppDirectoryServiceDefs.h"
 #include "nscore.h"
@@ -91,12 +90,12 @@ public:
 
     bool SetGREDir(const char *dir);
     void ClearGREDir() { mGREDir = nsnull; }
-    void SetAppFile(nsILocalFile *appFile);
+    void SetAppFile(nsIFile *appFile);
     void ClearAppFile() { mAppFile = nsnull; }
 
 private:
-    nsCOMPtr<nsILocalFile> mGREDir;
-    nsCOMPtr<nsILocalFile> mAppFile;
+    nsCOMPtr<nsIFile> mGREDir;
+    nsCOMPtr<nsIFile> mAppFile;
 };
 
 /***************************************************************************/
@@ -171,7 +170,7 @@ GetLocationProperty(JSContext *cx, JSHandleObject obj, JSHandleId id, jsval *vp)
         NS_ConvertUTF8toUTF16 filenameString(filename);
 #endif
 
-        nsCOMPtr<nsILocalFile> location;
+        nsCOMPtr<nsIFile> location;
         if (NS_SUCCEEDED(rv)) {
             rv = NS_NewLocalFile(filenameString,
                                  false, getter_AddRefs(location));
@@ -197,7 +196,7 @@ GetLocationProperty(JSContext *cx, JSHandleObject obj, JSHandleId id, jsval *vp)
                 !symlink)
                 location->Normalize();
             rv = xpc->WrapNative(cx, obj, location,
-                                 NS_GET_IID(nsILocalFile),
+                                 NS_GET_IID(nsIFile),
                                  getter_AddRefs(locationHolder));
 
             if (NS_SUCCEEDED(rv) &&
@@ -424,7 +423,7 @@ Dump(JSContext *cx, unsigned argc, jsval *vp)
         return false;
 
 #ifdef ANDROID
-    __android_log_print(ANDROID_LOG_INFO, "Gecko", bytes.ptr());
+    __android_log_print(ANDROID_LOG_INFO, "Gecko", "%s", bytes.ptr());
 #endif
     fputs(bytes.ptr(), gOutFile);
     fflush(gOutFile);
@@ -683,7 +682,8 @@ static const struct JSOption {
     {"relimit",         JSOPTION_RELIMIT},
     {"strict",          JSOPTION_STRICT},
     {"werror",          JSOPTION_WERROR},
-    {"xml",             JSOPTION_XML},
+    {"allow_xml",       JSOPTION_ALLOW_XML},
+    {"moar_xml",        JSOPTION_MOAR_XML},
     {"strict_mode",     JSOPTION_STRICT_MODE},
 };
 
@@ -901,7 +901,7 @@ env_enumerate(JSContext *cx, JSHandleObject obj)
 
 static JSBool
 env_resolve(JSContext *cx, JSHandleObject obj, JSHandleId id, unsigned flags,
-            JSObject **objp)
+            JSMutableHandleObject objp)
 {
     JSString *idstr, *valstr;
 
@@ -927,7 +927,7 @@ env_resolve(JSContext *cx, JSHandleObject obj, JSHandleId id, unsigned flags,
                                    NULL, NULL, JSPROP_ENUMERATE)) {
             return false;
         }
-        *objp = obj;
+        objp.set(obj);
     }
     return true;
 }
@@ -1183,24 +1183,10 @@ ProcessArgs(JSContext *cx, JSObject *obj, char **argv, int argc)
             JS_ToggleOptions(cx, JSOPTION_STRICT);
             break;
         case 'x':
-            JS_ToggleOptions(cx, JSOPTION_XML);
+            JS_ToggleOptions(cx, JSOPTION_MOAR_XML);
             break;
         case 'd':
             xpc_ActivateDebugMode();
-            break;
-        case 'P':
-            if (JS_GetClass(JS_GetPrototype(obj)) != &global_class) {
-                JSObject *gobj;
-
-                if (!JS_DeepFreezeObject(cx, obj))
-                    return false;
-                gobj = JS_NewGlobalObject(cx, &global_class);
-                if (!gobj || !JS_SplicePrototype(cx, gobj, obj))
-                    return false;
-                JS_SetParent(cx, gobj, NULL);
-                JS_SetGlobalObject(cx, gobj);
-                obj = gobj;
-            }
             break;
         case 'f':
             if (++i == argc) {
@@ -1393,20 +1379,6 @@ FullTrustSecMan::GetSubjectPrincipal(nsIPrincipal **_retval)
 {
     NS_IF_ADDREF(*_retval = mSystemPrincipal);
     return *_retval ? NS_OK : NS_ERROR_FAILURE;
-}
-
-/* [noscript] void pushContextPrincipal (in JSContextPtr cx, in JSStackFramePtr fp, in nsIPrincipal principal); */
-NS_IMETHODIMP
-FullTrustSecMan::PushContextPrincipal(JSContext * cx, JSStackFrame * fp, nsIPrincipal *principal)
-{
-    return NS_OK;
-}
-
-/* [noscript] void popContextPrincipal (in JSContextPtr cx); */
-NS_IMETHODIMP
-FullTrustSecMan::PopContextPrincipal(JSContext * cx)
-{
-    return NS_OK;
 }
 
 /* [noscript] nsIPrincipal getSystemPrincipal (); */
@@ -1704,7 +1676,7 @@ main(int argc, char **argv, char **envp)
 
     NS_LogInit();
 
-    nsCOMPtr<nsILocalFile> appFile;
+    nsCOMPtr<nsIFile> appFile;
     rv = XRE_GetBinaryPath(argv[0], getter_AddRefs(appFile));
     if (NS_FAILED(rv)) {
         printf("Couldn't find application file.\n");
@@ -1737,7 +1709,7 @@ main(int argc, char **argv, char **envp)
         if (argc < 3)
             return usage();
 
-        nsCOMPtr<nsILocalFile> dir;
+        nsCOMPtr<nsIFile> dir;
         rv = XRE_GetFileFromPath(argv[2], getter_AddRefs(dir));
         if (NS_SUCCEEDED(rv)) {
             appDir = do_QueryInterface(dir, &rv);
@@ -1754,7 +1726,7 @@ main(int argc, char **argv, char **envp)
         if (argc < 3)
             return usage();
 
-        nsCOMPtr<nsILocalFile> lf;
+        nsCOMPtr<nsIFile> lf;
         rv = XRE_GetFileFromPath(argv[2], getter_AddRefs(lf));
         if (NS_FAILED(rv)) {
             printf("Couldn't get manifest file.\n");
@@ -1768,8 +1740,8 @@ main(int argc, char **argv, char **envp)
 
     {
         if (argc > 1 && !strcmp(argv[1], "--greomni")) {
-            nsCOMPtr<nsILocalFile> greOmni;
-            nsCOMPtr<nsILocalFile> appOmni;
+            nsCOMPtr<nsIFile> greOmni;
+            nsCOMPtr<nsIFile> appOmni;
             XRE_GetFileFromPath(argv[2], getter_AddRefs(greOmni));
             if (argc > 3 && !strcmp(argv[3], "--appomni")) {
                 XRE_GetFileFromPath(argv[4], getter_AddRefs(appOmni));
@@ -1811,6 +1783,7 @@ main(int argc, char **argv, char **envp)
             return 1;
         }
 
+        JS_SetOptions(cx, JS_GetOptions(cx) | JSOPTION_ALLOW_XML);
         xpc_LocalizeContext(cx);
 
         nsCOMPtr<nsIXPConnect> xpc = do_GetService(nsIXPConnect::GetCID());
@@ -2006,7 +1979,7 @@ XPCShellDirProvider::SetGREDir(const char *dir)
 }
 
 void
-XPCShellDirProvider::SetAppFile(nsILocalFile* appFile)
+XPCShellDirProvider::SetAppFile(nsIFile* appFile)
 {
     mAppFile = appFile;
 }
@@ -2059,18 +2032,27 @@ XPCShellDirProvider::GetFile(const char *prop, bool *persistent,
             FAILED(SHGetPathFromIDListA(pItemIDList, appData))) {
             return NS_ERROR_FAILURE;
         }
-#ifdef MOZ_APP_PROFILE
-        sprintf(path, "%s\\%s", appData, MOZ_APP_PROFILE);
-#else
-        sprintf(path, "%s\\%s\\%s\\%s", appData, MOZ_APP_VENDOR, MOZ_APP_BASENAME, MOZ_APP_NAME);
-#endif
         nsAutoString pathName;
-        pathName.AssignASCII(path);
-        nsCOMPtr<nsILocalFile> localFile;
+        pathName.AssignASCII(appData);
+        nsCOMPtr<nsIFile> localFile;
         nsresult rv = NS_NewLocalFile(pathName, true, getter_AddRefs(localFile));
         if (NS_FAILED(rv)) {
             return rv;
         }
+
+#ifdef MOZ_APP_PROFILE
+        localFile->AppendNative(NS_LITERAL_CSTRING(MOZ_APP_PROFILE));
+#else
+        // MOZ_APP_VENDOR and MOZ_APP_BASENAME are optional.
+#ifdef MOZ_APP_VENDOR
+        localFile->AppendNative(NS_LITERAL_CSTRING(MOZ_APP_VENDOR));
+#endif
+#ifdef MOZ_APP_BASENAME
+        localFile->AppendNative(NS_LITERAL_CSTRING(MOZ_APP_BASENAME));
+#endif
+        // However app name is always appended.
+        localFile->AppendNative(NS_LITERAL_CSTRING(MOZ_APP_NAME));
+#endif
         return localFile->Clone(result);
 #else
         // Fail on non-Windows platforms, the caller is supposed to fal back on
