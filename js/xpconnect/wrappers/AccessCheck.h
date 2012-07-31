@@ -5,6 +5,9 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#ifndef __AccessCheck_h__
+#define __AccessCheck_h__
+
 #include "jsapi.h"
 #include "jswrapper.h"
 #include "WrapperFactory.h"
@@ -15,7 +18,7 @@ namespace xpc {
 
 class AccessCheck {
   public:
-    static bool isSameOrigin(JSCompartment *a, JSCompartment *b);
+    static bool subsumes(JSCompartment *a, JSCompartment *b);
     static bool isChrome(JSCompartment *compartment);
     static bool callerIsChrome();
     static nsIPrincipal *getPrincipal(JSCompartment *compartment);
@@ -23,7 +26,6 @@ class AccessCheck {
                                              js::Wrapper::Action act);
     static bool isSystemOnlyAccessPermitted(JSContext *cx);
     static bool isLocationObjectSameOrigin(JSContext *cx, JSObject *wrapper);
-    static bool documentDomainMakesSameOrigin(JSContext *cx, JSObject *obj);
 
     static bool needsSystemOnlyWrapper(JSObject *obj);
 
@@ -150,3 +152,5 @@ struct ComponentsObjectPolicy : public Policy {
 };
 
 }
+
+#endif /* __AccessCheck_h__ */

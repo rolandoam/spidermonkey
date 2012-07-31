@@ -28,14 +28,22 @@ using namespace js::mjit;
 
 typedef JSC::MacroAssembler::RegisterID RegisterID;
 
+static inline bool
+SuitableForBitop(FrameEntry *fe)
+{
+    return !(fe->isNotType(JSVAL_TYPE_INT32) &&
+             fe->isNotType(JSVAL_TYPE_DOUBLE) &&
+             fe->isNotType(JSVAL_TYPE_BOOLEAN));
+}
+
 void
 mjit::Compiler::ensureInteger(FrameEntry *fe, Uses uses)
 {
+    JS_ASSERT(SuitableForBitop(fe));
+
     if (fe->isConstant()) {
-        if (!fe->isType(JSVAL_TYPE_INT32)) {
-            JS_ASSERT(fe->isType(JSVAL_TYPE_DOUBLE));
-            fe->convertConstantDoubleToInt32(cx);
-        }
+        if (!fe->isType(JSVAL_TYPE_INT32))
+            fe->convertConstantDoubleOrBooleanToInt32(cx);
     } else if (fe->isType(JSVAL_TYPE_DOUBLE)) {
         FPRegisterID fpreg = frame.tempFPRegForData(fe);
         FPRegisterID fptemp = frame.allocFPReg();
@@ -68,7 +76,7 @@ mjit::Compiler::ensureInteger(FrameEntry *fe, Uses uses)
 
         frame.freeReg(fptemp);
         frame.learnType(fe, JSVAL_TYPE_INT32, data);
-    } else if (!fe->isType(JSVAL_TYPE_INT32)) {
+    } else if (!fe->isType(JSVAL_TYPE_INT32) && !fe->isType(JSVAL_TYPE_BOOLEAN)) {
         if (masm.supportsFloatingPoint()) {
             FPRegisterID fptemp = frame.allocFPReg();
             RegisterID typeReg = frame.tempRegForType(fe);
@@ -114,7 +122,7 @@ mjit::Compiler::jsop_bitnot()
     FrameEntry *top = frame.peek(-1);
 
     /* We only want to handle integers here. */
-    if (top->isNotType(JSVAL_TYPE_INT32) && top->isNotType(JSVAL_TYPE_DOUBLE)) {
+    if (!SuitableForBitop(top)) {
         prepareStubCall(Uses(1));
         INLINE_STUBCALL(stubs::BitNot, REJOIN_FALLTHROUGH);
         frame.pop();
@@ -170,12 +178,11 @@ mjit::Compiler::jsop_bitop(JSOp op)
     }
 
     /* Convert a double RHS to integer if it's constant for the test below. */
-    if (rhs->isConstant() && rhs->getValue().isDouble())
-        rhs->convertConstantDoubleToInt32(cx);
+    if (rhs->isConstant() && (rhs->isType(JSVAL_TYPE_DOUBLE) || rhs->isType(JSVAL_TYPE_BOOLEAN)))
+        rhs->convertConstantDoubleOrBooleanToInt32(cx);
 
     /* We only want to handle integers here. */
-    if ((lhs->isNotType(JSVAL_TYPE_INT32) && lhs->isNotType(JSVAL_TYPE_DOUBLE)) ||
-        (rhs->isNotType(JSVAL_TYPE_INT32) && rhs->isNotType(JSVAL_TYPE_DOUBLE)) ||
+    if (!SuitableForBitop(lhs) || !SuitableForBitop(rhs) ||
         (op == JSOP_URSH && rhs->isConstant() && rhs->getValue().toInt32() % 32 == 0)) {
         prepareStubCall(Uses(2));
         INLINE_STUBCALL(stub, REJOIN_FALLTHROUGH);
@@ -563,7 +570,7 @@ mjit::Compiler::jsop_not()
     if (top->isConstant()) {
         const Value &v = top->getValue();
         frame.pop();
-        frame.push(BooleanValue(!js_ValueToBoolean(v)));
+        frame.push(BooleanValue(!ToBoolean(v)));
         return;
     }
 
@@ -839,7 +846,7 @@ mjit::Compiler::jsop_ifneq(JSOp op, jsbytecode *target)
     FrameEntry *fe = frame.peek(-1);
 
     if (fe->isConstant()) {
-        JSBool b = js_ValueToBoolean(fe->getValue());
+        JSBool b = ToBoolean(fe->getValue());
 
         frame.pop();
 
@@ -866,7 +873,7 @@ mjit::Compiler::jsop_andor(JSOp op, jsbytecode *target)
     FrameEntry *fe = frame.peek(-1);
 
     if (fe->isConstant()) {
-        JSBool b = js_ValueToBoolean(fe->getValue());
+        JSBool b = ToBoolean(fe->getValue());
 
         /* Short-circuit. */
         if ((op == JSOP_OR && b == JS_TRUE) ||
@@ -1212,7 +1219,7 @@ mjit::Compiler::jsop_setelem_dense()
         masm.storeValue(vr, BaseIndex(slotsReg, key.reg(), masm.JSVAL_SCALE));
 
     stubcc.leave();
-    OOL_STUBCALL(STRICT_VARIANT(stubs::SetElem), REJOIN_FALLTHROUGH);
+    OOL_STUBCALL(STRICT_VARIANT(script, stubs::SetElem), REJOIN_FALLTHROUGH);
 
     if (!hoisted)
         frame.freeReg(slotsReg);
@@ -1486,7 +1493,7 @@ mjit::Compiler::jsop_setelem_typed(int atype)
         frame.freeReg(objReg);
 
     stubcc.leave();
-    OOL_STUBCALL(STRICT_VARIANT(stubs::SetElem), REJOIN_FALLTHROUGH);
+    OOL_STUBCALL(STRICT_VARIANT(script, stubs::SetElem), REJOIN_FALLTHROUGH);
 
     frame.shimmy(2);
     stubcc.rejoin(Changes(2));
@@ -1575,7 +1582,7 @@ mjit::Compiler::jsop_setelem(bool popGuaranteed)
     }
 #endif
 
-    SetElementICInfo ic = SetElementICInfo(JSOp(*PC));
+    SetElementICInfo ic;
 
     // One by one, check if the most important stack entries have registers,
     // and if so, pin them. This is to avoid spilling and reloading from the
@@ -1687,9 +1694,9 @@ mjit::Compiler::jsop_setelem(bool popGuaranteed)
     stubcc.leave();
 #if defined JS_POLYIC
     passICAddress(&ic);
-    ic.slowPathCall = OOL_STUBCALL(STRICT_VARIANT(ic::SetElement), REJOIN_FALLTHROUGH);
+    ic.slowPathCall = OOL_STUBCALL(STRICT_VARIANT(script, ic::SetElement), REJOIN_FALLTHROUGH);
 #else
-    OOL_STUBCALL(STRICT_VARIANT(stubs::SetElem), REJOIN_FALLTHROUGH);
+    OOL_STUBCALL(STRICT_VARIANT(script, stubs::SetElem), REJOIN_FALLTHROUGH);
 #endif
 
     ic.fastPathRejoin = masm.label();
@@ -2175,7 +2182,7 @@ mjit::Compiler::jsop_getelem()
         return true;
     }
 
-    GetElementICInfo ic = GetElementICInfo(JSOp(*PC));
+    GetElementICInfo ic;
 
     // Pin the top of the stack to avoid spills, before allocating registers.
     MaybeRegisterID pinnedIdData = frame.maybePinData(id);

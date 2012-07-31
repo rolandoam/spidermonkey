@@ -291,9 +291,7 @@ endif
 ifndef MOZ_AUTO_DEPS
 ifneq (,$(OBJS)$(XPIDLSRCS)$(SIMPLE_PROGRAMS))
 MDDEPFILES		= $(addprefix $(MDDEPDIR)/,$(OBJS:=.pp))
-ifndef NO_GEN_XPT
 MDDEPFILES		+= $(addprefix $(MDDEPDIR)/,$(XPIDLSRCS:.idl=.h.pp) $(XPIDLSRCS:.idl=.xpt.pp))
-endif
 endif
 endif
 
@@ -1298,7 +1296,6 @@ $(XPIDL_GEN_DIR)/%.h: %.idl $(XPIDL_DEPS) $(xpidl-preqs)
 	@if test -n "$(findstring $*.h, $(EXPORTS))"; \
 	  then echo "*** WARNING: file $*.h generated from $*.idl overrides $(srcdir)/$*.h"; else true; fi
 
-ifndef NO_GEN_XPT
 # generate intermediate .xpt files into $(XPIDL_GEN_DIR), then link
 # into $(XPIDL_MODULE).xpt and export it to $(FINAL_TARGET)/components.
 $(XPIDL_GEN_DIR)/%.xpt: %.idl $(XPIDL_DEPS) $(xpidl-preqs)
@@ -1322,8 +1319,6 @@ ifndef NO_INTERFACES_MANIFEST
 	@$(PYTHON) $(MOZILLA_DIR)/config/buildlist.py $(FINAL_TARGET)/chrome.manifest "manifest components/interfaces.manifest"
 endif
 endif
-
-endif # NO_GEN_XPT
 
 GARBAGE_DIRS		+= $(XPIDL_GEN_DIR)
 
@@ -1751,6 +1746,13 @@ FREEZE_VARIABLES = \
   TIERS \
   EXTRA_COMPONENTS \
   EXTRA_PP_COMPONENTS \
+  MOCHITEST_FILES \
+  MOCHITEST_FILES_PARTS \
+  MOCHITEST_CHROME_FILES \
+  MOCHITEST_BROWSER_FILES \
+  MOCHITEST_BROWSER_FILES_PARTS \
+  MOCHITEST_A11Y_FILES \
+  MOCHITEST_WEBAPPRT_CHROME_FILES \
   $(NULL)
 
 $(foreach var,$(FREEZE_VARIABLES),$(eval $(var)_FROZEN := '$($(var))'))

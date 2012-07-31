@@ -17,6 +17,7 @@
 #include "frontend/TreeContext.h"
 
 namespace js {
+namespace frontend {
 
 /*
  * Indicates a location in the stack that an upvar value can be retrieved from
@@ -723,19 +724,21 @@ struct ParseNode {
     Definition *resolve();
 
 /* PN_FUNC and PN_NAME pn_dflags bits. */
-#define PND_LET         0x01            /* let (block-scoped) binding */
-#define PND_CONST       0x02            /* const binding (orthogonal to let) */
-#define PND_INITIALIZED 0x04            /* initialized declaration */
-#define PND_ASSIGNED    0x08            /* set if ever LHS of assignment */
-#define PND_TOPLEVEL    0x10            /* see isTopLevel() below */
-#define PND_BLOCKCHILD  0x20            /* use or def is direct block child */
-#define PND_PLACEHOLDER 0x40            /* placeholder definition for lexdep */
-#define PND_BOUND       0x80            /* bound to a stack or global slot */
-#define PND_DEOPTIMIZED 0x100           /* former pn_used name node, pn_lexdef
+#define PND_LET                 0x01    /* let (block-scoped) binding */
+#define PND_CONST               0x02    /* const binding (orthogonal to let) */
+#define PND_ASSIGNED            0x04    /* set if ever LHS of assignment */
+#define PND_BLOCKCHILD          0x08    /* use or def is direct block child */
+#define PND_PLACEHOLDER         0x10    /* placeholder definition for lexdep */
+#define PND_BOUND               0x20    /* bound to a stack or global slot */
+#define PND_DEOPTIMIZED         0x40    /* former pn_used name node, pn_lexdef
                                            still valid, but this use no longer
                                            optimizable via an upvar opcode */
-#define PND_CLOSED      0x200           /* variable is closed over */
-#define PND_DEFAULT     0x400           /* definition is an arg with a default */
+#define PND_CLOSED              0x80    /* variable is closed over */
+#define PND_DEFAULT            0x100    /* definition is an arg with a default */
+#define PND_IMPLICITARGUMENTS  0x200    /* the definition is a placeholder for
+                                           'arguments' that has been converted
+                                           into a definition after the function
+                                           body has been parsed. */
 
 /* Flags to propagate from uses to definition. */
 #define PND_USE2DEF_FLAGS (PND_ASSIGNED | PND_CLOSED)
@@ -776,26 +779,13 @@ struct ParseNode {
 
     bool isLet() const          { return test(PND_LET); }
     bool isConst() const        { return test(PND_CONST); }
-    bool isInitialized() const  { return test(PND_INITIALIZED); }
     bool isBlockChild() const   { return test(PND_BLOCKCHILD); }
     bool isPlaceholder() const  { return test(PND_PLACEHOLDER); }
     bool isDeoptimized() const  { return test(PND_DEOPTIMIZED); }
     bool isAssigned() const     { return test(PND_ASSIGNED); }
     bool isClosed() const       { return test(PND_CLOSED); }
-
-    /*
-     * True iff this definition creates a top-level binding in the overall
-     * script being compiled -- that is, it affects the whole program's
-     * bindings, not bindings for a specific function (unless this definition
-     * is in the outermost scope in eval code, executed within a function) or
-     * the properties of a specific object (through the with statement).
-     *
-     * NB: Function sub-statements found in overall program code and not nested
-     *     within other functions are not currently top level, even though (if
-     *     executed) they do create top-level bindings; there is no particular
-     *     rationale for this behavior.
-     */
-    bool isTopLevel() const     { return test(PND_TOPLEVEL); }
+    bool isBound() const        { return test(PND_BOUND); }
+    bool isImplicitArguments() const { return test(PND_IMPLICITARGUMENTS); }
 
     void become(ParseNode *pn2);
     void clear();
@@ -1469,6 +1459,8 @@ struct FunctionBox : public ObjectBox
     FunctionBox     *kids;
     FunctionBox     *parent;
     Bindings        bindings;               /* bindings for this function */
+    size_t          bufStart;
+    size_t          bufEnd;
     uint16_t        level;
     uint16_t        ndefaults;
     StrictMode::StrictModeState strictModeState;
@@ -1499,6 +1491,7 @@ struct FunctionBox : public ObjectBox
     void recursivelySetStrictMode(StrictMode::StrictModeState strictness);
 };
 
+} /* namespace frontend */
 } /* namespace js */
 
 #endif /* ParseNode_h__ */

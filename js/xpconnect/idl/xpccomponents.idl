@@ -118,7 +118,7 @@ interface ScheduledGCCallback : nsISupports
 /**
 * interface of Components.utils
 */
-[scriptable, uuid(9e43a260-5db2-11e1-b86c-0800200c9a66)]
+[scriptable, uuid(2df24c04-f1ef-481c-8605-433082a34e95)]
 interface nsIXPCComponents_Utils : nsISupports
 {
 
@@ -302,6 +302,26 @@ interface nsIXPCComponents_Utils : nsISupports
     [implicit_jscontext]
     void makeObjectPropsNormal(in jsval vobj);
 
+    /**
+     * Determines whether this object is backed by a DeadObjectProxy.
+     *
+     * Dead-wrapper objects hold no other objects alive (they have no outgoing
+     * reference edges) and will throw if you touch them (e.g. by
+     * reading/writing a property).
+     */
+    bool isDeadWrapper(in jsval obj);
+
+    /*
+     * To be called from JS only. This is for Gecko internal use only, and may
+     * disappear at any moment.
+     *
+     * Forces a recomputation of all wrappers in and out of the compartment
+     * containing |obj|. If |obj| is not an object, all wrappers system-wide
+     * are recomputed.
+     */
+    [implicit_jscontext]
+    void recomputeWrappers([optional] in jsval vobj);
+
     /*
      * To be called from JS only.
      *
@@ -339,12 +359,15 @@ interface nsIXPCComponents_Utils : nsISupports
 
     [implicit_jscontext]
     void setGCZeal(in long zeal);
+
+    [implicit_jscontext]
+    void nukeSandbox(in jsval obj);
 };
 
 /**
 * interface of JavaScript's 'Components' object
 */
-[scriptable, uuid(4676e9cf-2c07-423b-b161-26bb9d8067d3)]
+[scriptable, uuid(8406dedb-23cc-42db-9f69-1f18785091b5)]
 interface nsIXPCComponents : nsISupports
 {
     readonly attribute nsIXPCComponents_Interfaces      interfaces;

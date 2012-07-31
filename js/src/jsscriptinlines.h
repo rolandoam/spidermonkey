@@ -15,7 +15,6 @@
 #include "jsscript.h"
 #include "jsscope.h"
 
-#include "vm/ScopeObject.h"
 #include "vm/GlobalObject.h"
 #include "vm/RegExpObject.h"
 
@@ -41,22 +40,14 @@ Bindings::transfer(Bindings *bindings)
 }
 
 Shape *
-Bindings::lastShape() const
-{
-    JS_ASSERT(lastBinding);
-    JS_ASSERT(!lastBinding->inDictionary());
-    return lastBinding;
-}
-
-Shape *
 Bindings::initialShape(JSContext *cx) const
 {
     /* Get an allocation kind to match an empty call object. */
     gc::AllocKind kind = gc::FINALIZE_OBJECT2_BACKGROUND;
     JS_ASSERT(gc::GetGCKindSlots(kind) == CallObject::RESERVED_SLOTS);
 
-    return EmptyShape::getInitialShape(cx, &CallClass, NULL, NULL, kind,
-                                       BaseShape::VAROBJ);
+    return EmptyShape::getInitialShape(cx, &CallClass, NULL, cx->global(),
+                                       kind, BaseShape::VAROBJ);
 }
 
 bool
@@ -88,16 +79,6 @@ Bindings::varIndexToSlot(uint16_t i)
 {
     JS_ASSERT(i < nvars);
     return CallObject::RESERVED_SLOTS + i + nargs;
-}
-
-unsigned
-Bindings::argumentsVarIndex(JSContext *cx) const
-{
-    PropertyName *arguments = cx->runtime->atomState.argumentsAtom;
-    unsigned i;
-    DebugOnly<BindingKind> kind = lookup(cx, arguments, &i);
-    JS_ASSERT(kind == VARIABLE || kind == CONSTANT);
-    return i;
 }
 
 extern void
@@ -191,58 +172,41 @@ JSScript::hasGlobal() const
      * which have had their scopes cleared. compileAndGo code should not run
      * anymore against such globals.
      */
-    JS_ASSERT(types && types->hasScope());
-    js::GlobalObject *obj = types->global;
-    return obj && !obj->isCleared();
+    return compileAndGo && !global().isCleared();
 }
 
-inline js::GlobalObject *
+inline js::GlobalObject &
 JSScript::global() const
 {
-    JS_ASSERT(hasGlobal());
-    return types->global;
+    /*
+     * A JSScript always marks its compartment's global (via bindings) so we
+     * can assert that maybeGlobal is non-null here.
+     */
+    return *compartment()->maybeGlobal();
 }
 
 inline bool
 JSScript::hasClearedGlobal() const
 {
-    JS_ASSERT(types && types->hasScope());
-    js::GlobalObject *obj = types->global;
-    return obj && obj->isCleared();
-}
-
-inline js::types::TypeScriptNesting *
-JSScript::nesting() const
-{
-    JS_ASSERT(function() && types && types->hasScope());
-    return types->nesting;
-}
-
-inline void
-JSScript::clearNesting()
-{
-    js::types::TypeScriptNesting *nesting = this->nesting();
-    if (nesting) {
-        js::Foreground::delete_(nesting);
-        types->nesting = NULL;
-    }
+    JS_ASSERT(types);
+    return global().isCleared();
 }
 
 #ifdef JS_METHODJIT
 inline bool
-JSScript::ensureHasJITInfo(JSContext *cx)
+JSScript::ensureHasMJITInfo(JSContext *cx)
 {
-    if (jitInfo)
+    if (mJITInfo)
         return true;
-    jitInfo = cx->new_<JITScriptSet>();
-    return jitInfo != NULL;
+    mJITInfo = cx->new_<JITScriptSet>();
+    return mJITInfo != NULL;
 }
 
 inline void
-JSScript::destroyJITInfo(js::FreeOp *fop)
+JSScript::destroyMJITInfo(js::FreeOp *fop)
 {
-    fop->delete_(jitInfo);
-    jitInfo = NULL;
+    fop->delete_(mJITInfo);
+    mJITInfo = NULL;
 }
 #endif /* JS_METHODJIT */
 

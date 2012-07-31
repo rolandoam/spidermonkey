@@ -26,6 +26,7 @@
 #include "vm/Stack-inl.h"
 
 using namespace js;
+using js::frontend::IsIdentifier;
 
 
 /*** Forward declarations ************************************************************************/
@@ -221,7 +222,7 @@ class Debugger::FrameRange
 /*** Breakpoints *********************************************************************************/
 
 BreakpointSite::BreakpointSite(JSScript *script, jsbytecode *pc)
-  : script(script), pc(pc), scriptGlobal(NULL), enabledCount(0),
+  : script(script), pc(pc), enabledCount(0),
     trapHandler(NULL), trapClosure(UndefinedValue())
 {
     JS_ASSERT(!script->hasBreakpointsAt(pc));
@@ -232,7 +233,7 @@ void
 BreakpointSite::recompile(FreeOp *fop)
 {
 #ifdef JS_METHODJIT
-    if (script->hasJITInfo()) {
+    if (script->hasMJITInfo()) {
         mjit::Recompiler::clearStackReferences(fop, script);
         mjit::ReleaseScriptCode(fop, script);
     }
@@ -1566,7 +1567,7 @@ Debugger::setEnabled(JSContext *cx, unsigned argc, Value *vp)
 {
     REQUIRE_ARGC("Debugger.set enabled", 1);
     THIS_DEBUGGER(cx, argc, vp, "set enabled", args, dbg);
-    bool enabled = js_ValueToBoolean(args[0]);
+    bool enabled = ToBoolean(args[0]);
 
     if (enabled != dbg->enabled) {
         for (Breakpoint *bp = dbg->firstBreakpoint(); bp; bp = bp->nextInDebugger()) {
@@ -1756,7 +1757,7 @@ JSBool
 Debugger::getDebuggees(JSContext *cx, unsigned argc, Value *vp)
 {
     THIS_DEBUGGER(cx, argc, vp, "getDebuggees", args, dbg);
-    RootedObject arrobj(cx, NewDenseAllocatedArray(cx, dbg->debuggees.count(), NULL));
+    RootedObject arrobj(cx, NewDenseAllocatedArray(cx, dbg->debuggees.count()));
     if (!arrobj)
         return false;
     arrobj->ensureDenseArrayInitializedLength(cx, 0, dbg->debuggees.count());
@@ -2072,7 +2073,7 @@ class Debugger::ScriptQuery {
         Value innermostProperty;
         if (!query->getProperty(cx, cx->runtime->atomState.innermostAtom, &innermostProperty))
             return false;
-        innermost = js_ValueToBoolean(innermostProperty);
+        innermost = ToBoolean(innermostProperty);
         if (innermost) {
             /* Technically, we need only check hasLine, but this is clearer. */
             if (url.isUndefined() || !hasLine) {
@@ -2105,9 +2106,10 @@ class Debugger::ScriptQuery {
         for (CompartmentSet::Range r = compartments.all(); !r.empty(); r.popFront()) {
             for (gc::CellIter i(r.front(), gc::FINALIZE_SCRIPT); !i.done(); i.next()) {
                 JSScript *script = i.get<JSScript>();
-                GlobalObject *global = script->getGlobalObjectOrNull();
-                if (global && !consider(script, global, vector))
-                    return false;
+                if (script->hasGlobal() && !script->isForEval()) {
+                    if (!consider(script, &script->global(), vector))
+                        return false;
+                }
             }
         }
 
@@ -2120,11 +2122,10 @@ class Debugger::ScriptQuery {
                 JSScript *script = fri.script();
 
                 /*
-                 * If eval scripts never have global objects set, then we don't need
-                 * to check the existing script vector for duplicates, since we only
-                 * include scripts with globals above.
+                 * Eval scripts were not considered above so we don't need to
+                 * check the existing script vector for duplicates.
                  */
-                JS_ASSERT(!script->getGlobalObjectOrNull());
+                JS_ASSERT(script->isForEval());
 
                 GlobalObject *global = &fri.fp()->global();
                 if (!consider(script, global, vector))
@@ -2329,7 +2330,7 @@ Debugger::findScripts(JSContext *cx, unsigned argc, Value *vp)
     if (!query.findScripts(&scripts))
         return false;
 
-    RootedObject result(cx, NewDenseAllocatedArray(cx, scripts.length(), NULL));
+    RootedObject result(cx, NewDenseAllocatedArray(cx, scripts.length()));
     if (!result)
         return false;
 
@@ -2612,7 +2613,7 @@ class BytecodeRangeWithLineNumbers : private BytecodeRange
     using BytecodeRange::frontOffset;
 
     BytecodeRangeWithLineNumbers(JSContext *cx, JSScript *script)
-      : BytecodeRange(script), lineno(script->lineno), sn(script->notes()), snpc(script->code), skip(cx, this)
+      : BytecodeRange(script), lineno(script->lineno), sn(script->notes()), snpc(script->code), skip(cx, thisForCtor())
     {
         if (!SN_IS_TERMINATOR(sn))
             snpc += SN_DELTA(sn);
@@ -2630,6 +2631,8 @@ class BytecodeRangeWithLineNumbers : private BytecodeRange
     size_t frontLineNumber() const { return lineno; }
 
   private:
+    BytecodeRangeWithLineNumbers *thisForCtor() { return this; }
+
     void updateLine() {
         /*
          * Determine the current line number by reading all source notes up to
@@ -2861,19 +2864,7 @@ Debugger::observesScript(JSScript *script) const
 {
     if (!enabled)
         return false;
-
-    /* Does the script have a global stored in it? */
-    if (GlobalObject *global = script->getGlobalObjectOrNull())
-        return observesGlobal(global);
-
-    /* Is the script in a compartment this Debugger is debugging? */
-    JSCompartment *comp = script->compartment();
-    for (GlobalObjectSet::Range r = debuggees.all(); !r.empty(); r.popFront()) {
-        if (r.front()->compartment() == comp)
-            return true;
-    }
-
-    return false;
+    return observesGlobal(&script->global());
 }
 
 static JSBool
@@ -2897,8 +2888,7 @@ DebuggerScript_setBreakpoint(JSContext *cx, unsigned argc, Value *vp)
         return false;
 
     jsbytecode *pc = script->code + offset;
-    Rooted<GlobalObject *> scriptGlobal(cx, script->getGlobalObjectOrNull());
-    BreakpointSite *site = script->getOrCreateBreakpointSite(cx, pc, scriptGlobal);
+    BreakpointSite *site = script->getOrCreateBreakpointSite(cx, pc);
     if (!site)
         return false;
     site->inc(cx->runtime->defaultFreeOp());
@@ -3190,7 +3180,7 @@ DebuggerArguments_getArg(JSContext *cx, unsigned argc, Value *vp)
     Value arg;
     if (unsigned(i) < fp->numActualArgs()) {
         if (unsigned(i) < fp->numFormalArgs() && fp->script()->formalLivesInCallObject(i))
-            arg = fp->callObj().arg(i);
+            arg = fp->callObj().formal(i);
         else if (fp->script()->argsObjAliasesFormals() && fp->hasArgsObj())
             arg = fp->argsObj().arg(i);
         else
@@ -3419,14 +3409,13 @@ js::EvaluateInEnv(JSContext *cx, Handle<Env*> env, StackFrame *fp, const jschar 
      * calls and properly compute a static level. In practice, any non-zero
      * static level will suffice.
      */
-    JSPrincipals *prin = fp->scopeChain()->principals(cx);
-    bool compileAndGo = true;
-    bool noScriptRval = false;
-    bool needScriptGlobal = true;
-    JSScript *script = frontend::CompileScript(cx, env, fp, prin, prin,
-                                               compileAndGo, noScriptRval, needScriptGlobal,
-                                               chars, length, filename, lineno,
-                                               cx->findVersion(), NULL, /* staticLimit = */ 1);
+    CompileOptions options(cx);
+    options.setPrincipals(fp->scopeChain()->principals(cx))
+           .setCompileAndGo(true)
+           .setNoScriptRval(false)
+           .setFileAndLine(filename, lineno);
+    JSScript *script = frontend::CompileScript(cx, env, fp, options, chars, length,
+                                               /* source = */ NULL, /* staticLimit = */ 1);
     if (!script)
         return false;
 
@@ -3701,7 +3690,7 @@ DebuggerObject_getParameterNames(JSContext *cx, unsigned argc, Value *vp)
     }
 
     RootedFunction fun(cx, obj->toFunction());
-    JSObject *result = NewDenseAllocatedArray(cx, fun->nargs, NULL);
+    JSObject *result = NewDenseAllocatedArray(cx, fun->nargs);
     if (!result)
         return false;
     result->ensureDenseArrayInitializedLength(cx, 0, fun->nargs);
@@ -3710,12 +3699,12 @@ DebuggerObject_getParameterNames(JSContext *cx, unsigned argc, Value *vp)
         JS_ASSERT(fun->nargs == fun->script()->bindings.numArgs());
 
         if (fun->nargs > 0) {
-            BindingNames names(cx);
-            if (!fun->script()->bindings.getLocalNameArray(cx, &names))
+            BindingVector names(cx);
+            if (!GetOrderedBindings(cx, fun->script()->bindings, &names))
                 return false;
 
             for (size_t i = 0; i < fun->nargs; i++) {
-                JSAtom *name = names[i].maybeAtom;
+                PropertyName *name = names[i].maybeName;
                 result->setDenseArrayElement(i, name ? StringValue(name) : UndefinedValue());
             }
         }
@@ -4040,10 +4029,10 @@ DebuggerObject_isSealedHelper(JSContext *cx, unsigned argc, Value *vp, SealHelpe
     ErrorCopier ec(ac, dbg->toJSObject());
     bool r;
     if (op == Seal) {
-        if (!obj->isSealed(cx, &r))
+        if (!JSObject::isSealed(cx, obj, &r))
             return false;
     } else if (op == Freeze) {
-        if (!obj->isFrozen(cx, &r))
+        if (!JSObject::isFrozen(cx, obj, &r))
             return false;
     } else {
         r = obj->isExtensible();

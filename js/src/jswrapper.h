@@ -94,10 +94,6 @@ class JS_FRIEND_API(Wrapper)
      * on the underlying object's |id| property. In the case when |act| is CALL,
      * |id| is generally JSID_VOID.
      *
-     * leave() allows the policy to undo various scoped state changes taken in
-     * enter(). If enter() succeeds, leave() must be called upon completion of
-     * the approved action.
-     *
      * The |act| parameter to enter() specifies the action being performed. GET,
      * SET, and CALL are self-explanatory, but PUNCTURE requires more
      * explanation:
@@ -119,8 +115,6 @@ class JS_FRIEND_API(Wrapper)
      */
     virtual bool enter(JSContext *cx, JSObject *wrapper, jsid id, Action act,
                        bool *bp);
-
-    virtual void leave(JSContext *cx, JSObject *wrapper);
 };
 
 /*
@@ -208,7 +202,8 @@ class JS_FRIEND_API(DirectWrapper) : public Wrapper, public DirectProxyHandler
     /* Spidermonkey extensions. */
     virtual bool call(JSContext *cx, JSObject *wrapper, unsigned argc, Value *vp) MOZ_OVERRIDE;
     virtual bool construct(JSContext *cx, JSObject *wrapper, unsigned argc, Value *argv, Value *rval) MOZ_OVERRIDE;
-    virtual bool nativeCall(JSContext *cx, JSObject *wrapper, Class *clasp, Native native, CallArgs args) MOZ_OVERRIDE;
+    virtual bool nativeCall(JSContext *cx, IsAcceptableThis test, NativeImpl impl,
+                            CallArgs args) MOZ_OVERRIDE;
     virtual bool hasInstance(JSContext *cx, JSObject *wrapper, const Value *vp, bool *bp) MOZ_OVERRIDE;
     virtual JSString *obj_toString(JSContext *cx, JSObject *wrapper) MOZ_OVERRIDE;
     virtual JSString *fun_toString(JSContext *cx, JSObject *wrapper, unsigned indent) MOZ_OVERRIDE;
@@ -249,7 +244,8 @@ class JS_FRIEND_API(CrossCompartmentWrapper) : public DirectWrapper
     /* Spidermonkey extensions. */
     virtual bool call(JSContext *cx, JSObject *wrapper, unsigned argc, Value *vp) MOZ_OVERRIDE;
     virtual bool construct(JSContext *cx, JSObject *wrapper, unsigned argc, Value *argv, Value *rval) MOZ_OVERRIDE;
-    virtual bool nativeCall(JSContext *cx, JSObject *wrapper, Class *clasp, Native native, CallArgs args) MOZ_OVERRIDE;
+    virtual bool nativeCall(JSContext *cx, IsAcceptableThis test, NativeImpl impl,
+                            CallArgs args) MOZ_OVERRIDE;
     virtual bool hasInstance(JSContext *cx, JSObject *wrapper, const Value *vp, bool *bp) MOZ_OVERRIDE;
     virtual JSString *obj_toString(JSContext *cx, JSObject *wrapper) MOZ_OVERRIDE;
     virtual JSString *fun_toString(JSContext *cx, JSObject *wrapper, unsigned indent) MOZ_OVERRIDE;
@@ -274,7 +270,8 @@ class JS_FRIEND_API(SecurityWrapper) : public Base
   public:
     SecurityWrapper(unsigned flags);
 
-    virtual bool nativeCall(JSContext *cx, JSObject *wrapper, Class *clasp, Native native, CallArgs args) MOZ_OVERRIDE;
+    virtual bool nativeCall(JSContext *cx, IsAcceptableThis test, NativeImpl impl,
+                            CallArgs args) MOZ_OVERRIDE;
     virtual bool objectClassIs(JSObject *obj, ESClassValue classValue, JSContext *cx) MOZ_OVERRIDE;
     virtual bool regexp_toShared(JSContext *cx, JSObject *proxy, RegExpGuard *g) MOZ_OVERRIDE;
 };
@@ -298,6 +295,43 @@ class JS_FRIEND_API(ForceFrame)
     ForceFrame(JSContext *cx, JSObject *target);
     ~ForceFrame();
     bool enter();
+};
+
+class JS_FRIEND_API(DeadObjectProxy) : public BaseProxyHandler
+{
+  public:
+    static int sDeadObjectFamily;
+
+    explicit DeadObjectProxy();
+
+    /* ES5 Harmony fundamental wrapper traps. */
+    virtual bool getPropertyDescriptor(JSContext *cx, JSObject *wrapper, jsid id, bool set,
+                                       PropertyDescriptor *desc) MOZ_OVERRIDE;
+    virtual bool getOwnPropertyDescriptor(JSContext *cx, JSObject *wrapper, jsid id, bool set,
+                                          PropertyDescriptor *desc) MOZ_OVERRIDE;
+    virtual bool defineProperty(JSContext *cx, JSObject *wrapper, jsid id,
+                                PropertyDescriptor *desc) MOZ_OVERRIDE;
+    virtual bool getOwnPropertyNames(JSContext *cx, JSObject *wrapper, AutoIdVector &props) MOZ_OVERRIDE;
+    virtual bool delete_(JSContext *cx, JSObject *wrapper, jsid id, bool *bp) MOZ_OVERRIDE;
+    virtual bool enumerate(JSContext *cx, JSObject *wrapper, AutoIdVector &props) MOZ_OVERRIDE;
+
+    /* Spidermonkey extensions. */
+    virtual bool call(JSContext *cx, JSObject *proxy, unsigned argc, Value *vp);
+    virtual bool construct(JSContext *cx, JSObject *proxy, unsigned argc, Value *argv, Value *rval);
+    virtual bool nativeCall(JSContext *cx, IsAcceptableThis test, NativeImpl impl,
+                            CallArgs args) MOZ_OVERRIDE;
+    virtual bool hasInstance(JSContext *cx, JSObject *proxy, const Value *vp, bool *bp);
+    virtual bool objectClassIs(JSObject *obj, ESClassValue classValue, JSContext *cx);
+    virtual JSString *obj_toString(JSContext *cx, JSObject *proxy);
+    virtual JSString *fun_toString(JSContext *cx, JSObject *proxy, unsigned indent);
+    virtual bool regexp_toShared(JSContext *cx, JSObject *proxy, RegExpGuard *g);
+    virtual bool defaultValue(JSContext *cx, JSObject *obj, JSType hint, Value *vp);
+    virtual bool iteratorNext(JSContext *cx, JSObject *proxy, Value *vp);
+    virtual bool getElementIfPresent(JSContext *cx, JSObject *obj, JSObject *receiver,
+                                     uint32_t index, Value *vp, bool *present);
+
+
+    static DeadObjectProxy singleton;
 };
 
 extern JSObject *
@@ -328,6 +362,11 @@ UnwrapObject(JSObject *obj, bool stopAtOuter = true, unsigned *flagsp = NULL);
 JS_FRIEND_API(JSObject *)
 UnwrapObjectChecked(JSContext *cx, JSObject *obj);
 
+// Unwrap only the outermost security wrapper, with the same semantics as
+// above. This is the checked version of Wrapper::wrappedObject.
+JS_FRIEND_API(JSObject *)
+UnwrapOneChecked(JSContext *cx, JSObject *obj);
+
 JS_FRIEND_API(bool)
 IsCrossCompartmentWrapper(const JSObject *obj);
 
@@ -337,43 +376,12 @@ NukeCrossCompartmentWrapper(JSObject *wrapper);
 bool
 RemapWrapper(JSContext *cx, JSObject *wobj, JSObject *newTarget);
 
-bool
+JS_FRIEND_API(bool)
 RemapAllWrappersForObject(JSContext *cx, JSObject *oldTarget,
                           JSObject *newTarget);
 
 // API to recompute all cross-compartment wrappers whose source and target
 // match the given filters.
-//
-// These filters are designed to be ephemeral stack classes, and thus don't
-// do any rooting or holding of their members.
-struct CompartmentFilter {
-    virtual bool match(JSCompartment *c) const = 0;
-};
-
-struct AllCompartments : public CompartmentFilter {
-    virtual bool match(JSCompartment *c) const { return true; }
-};
-
-struct ContentCompartmentsOnly : public CompartmentFilter {
-    virtual bool match(JSCompartment *c) const {
-        return !IsSystemCompartment(c);
-    }
-};
-
-struct SingleCompartment : public CompartmentFilter {
-    JSCompartment *ours;
-    SingleCompartment(JSCompartment *c) : ours(c) {}
-    virtual bool match(JSCompartment *c) const { return c == ours; }
-};
-
-struct CompartmentsWithPrincipals : public CompartmentFilter {
-    JSPrincipals *principals;
-    CompartmentsWithPrincipals(JSPrincipals *p) : principals(p) {}
-    virtual bool match(JSCompartment *c) const {
-        return JS_GetCompartmentPrincipals(c) == principals;
-    }
-};
-
 JS_FRIEND_API(bool)
 RecomputeWrappers(JSContext *cx, const CompartmentFilter &sourceFilter,
                   const CompartmentFilter &targetFilter);

@@ -55,6 +55,9 @@
 using namespace mozilla;
 using namespace js;
 using namespace js::gc;
+using js::frontend::IsIdentifier;
+using js::frontend::LetDataToGroupAssign;
+using js::frontend::LetDataToOffset;
 
 /*
  * Index limit must stay within 32 bits.
@@ -1059,7 +1062,7 @@ struct JSPrinter
     jsbytecode      *dvgfence;      /* DecompileExpression fencepost */
     jsbytecode      **pcstack;      /* DecompileExpression modeled stack */
     JSFunction      *fun;           /* interpreted function */
-    BindingNames    *localNames;    /* argument and variable names */
+    BindingVector   *localNames;    /* argument and variable names */
     Vector<DecompiledOpcode> *decompiledOpcodes; /* optional state for decompiled ops */
 
     DecompiledOpcode &decompiled(jsbytecode *pc) {
@@ -1090,8 +1093,8 @@ js_NewPrinter(JSContext *cx, const char *name, JSFunction *fun,
     jp->localNames = NULL;
     jp->decompiledOpcodes = NULL;
     if (fun && fun->isInterpreted() && fun->script()->bindings.count() > 0) {
-        jp->localNames = cx->new_<BindingNames>(cx);
-        if (!jp->localNames || !fun->script()->bindings.getLocalNameArray(cx, jp->localNames)) {
+        jp->localNames = cx->new_<BindingVector>(cx);
+        if (!jp->localNames || !GetOrderedBindings(cx, fun->script()->bindings, jp->localNames)) {
             js_DestroyPrinter(jp);
             return NULL;
         }
@@ -1749,7 +1752,7 @@ GetArgOrVarAtom(JSPrinter *jp, unsigned slot)
 {
     LOCAL_ASSERT_RV(jp->fun, NULL);
     LOCAL_ASSERT_RV(slot < jp->fun->script()->bindings.count(), NULL);
-    JSAtom *name = (*jp->localNames)[slot].maybeAtom;
+    JSAtom *name = (*jp->localNames)[slot].maybeName;
 #if !JS_HAS_DESTRUCTURING
     LOCAL_ASSERT_RV(name, NULL);
 #endif
@@ -4650,8 +4653,8 @@ Decompile(SprintStack *ss, jsbytecode *pc, int nb)
 #if JS_HAS_GENERATOR_EXPRS
                 sn = js_GetSrcNote(jp->script, pc);
                 if (sn && SN_TYPE(sn) == SRC_GENEXP) {
-                    BindingNames *innerLocalNames;
-                    BindingNames *outerLocalNames;
+                    BindingVector *innerLocalNames;
+                    BindingVector *outerLocalNames;
                     JSScript *inner, *outer;
                     Vector<DecompiledOpcode> *decompiledOpcodes;
                     SprintStack ss2(cx);
@@ -4667,9 +4670,9 @@ Decompile(SprintStack *ss, jsbytecode *pc, int nb)
                      */
                     LifoAllocScope las(&cx->tempLifoAlloc());
                     if (fun->script()->bindings.count() > 0) {
-                        innerLocalNames = cx->new_<BindingNames>(cx);
+                        innerLocalNames = cx->new_<BindingVector>(cx);
                         if (!innerLocalNames ||
-                            !fun->script()->bindings.getLocalNameArray(cx, innerLocalNames))
+                            !GetOrderedBindings(cx, fun->script()->bindings, innerLocalNames))
                         {
                             return NULL;
                         }
@@ -4850,7 +4853,8 @@ Decompile(SprintStack *ss, jsbytecode *pc, int nb)
                     len = GET_JUMP_OFFSET(pc);
                     if (jp->fun->hasRest()) {
                         // Jump over rest parameter things.
-                        len += GetBytecodeLength(pc + len);
+                        if (pc[len] == JSOP_SETARG || pc[len] == JSOP_SETALIASEDVAR)
+                            len += GetBytecodeLength(pc + len);
                         LOCAL_ASSERT(pc[len] == JSOP_POP);
                         len += GetBytecodeLength(pc + len);
                     }
@@ -5093,7 +5097,7 @@ Decompile(SprintStack *ss, jsbytecode *pc, int nb)
                 sn = js_GetSrcNote(jp->script, pc);
 
                 /* Skip any #n= prefix to find the opening bracket. */
-                for (xval = rval; *xval != '[' && *xval != '{'; xval++)
+                for (xval = rval; *xval != '[' && *xval != '{' && *xval; xval++)
                     continue;
                 inArray = (*xval == '[');
                 if (inArray)
@@ -5363,10 +5367,13 @@ Decompile(SprintStack *ss, jsbytecode *pc, int nb)
                 pc += GetBytecodeLength(pc);
                 if (*pc == JSOP_UNDEFINED)
                     pc += GetBytecodeLength(pc);
-                LOCAL_ASSERT(*pc == JSOP_SETALIASEDVAR || *pc == JSOP_SETARG);
-                pc += GetBytecodeLength(pc);
-                LOCAL_ASSERT(*pc == JSOP_POP);
-                len = GetBytecodeLength(pc);
+                if (*pc == JSOP_SETALIASEDVAR || *pc == JSOP_SETARG) {
+                    pc += GetBytecodeLength(pc);
+                    LOCAL_ASSERT(*pc == JSOP_POP);
+                    len = GetBytecodeLength(pc);
+                } else {
+                    len = 0;
+                }
                 todo = -2;
                 break;
 
@@ -6379,7 +6386,7 @@ GetPCCountScriptContents(JSContext *cx, size_t index)
 
     {
         JSAutoEnterCompartment ac;
-        if (!ac.enter(cx, script->function() ? (JSObject *) script->function() : script->global()))
+        if (!ac.enter(cx, &script->global()))
             return NULL;
 
         if (!GetPCCountJSON(cx, sac, buf))

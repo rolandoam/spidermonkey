@@ -40,9 +40,6 @@
 #define JSFUN_EXPR_CLOSURE  0x1000  /* expression closure: function(x) x*x */
 #define JSFUN_EXTENDED      0x2000  /* structure is FunctionExtended */
 #define JSFUN_INTERPRETED   0x4000  /* use u.i if kind >= this value else u.native */
-#define JSFUN_NULL_CLOSURE  0x8000  /* null closure entrains no scope chain */
-#define JSFUN_KINDMASK      0xc000  /* encode interp vs. native and closure
-                                       optimization level -- see above */
 
 namespace js { class FunctionExtended; }
 
@@ -65,19 +62,13 @@ struct JSFunction : public JSObject
 
     bool hasDefaults()       const { return flags & JSFUN_HAS_DEFAULTS; }
     bool hasRest()           const { return flags & JSFUN_HAS_REST; }
-    bool isInterpreted()     const { return kind() >= JSFUN_INTERPRETED; }
+    bool isInterpreted()     const { return flags & JSFUN_INTERPRETED; }
     bool isNative()          const { return !isInterpreted(); }
     bool isNativeConstructor() const { return flags & JSFUN_CONSTRUCTOR; }
     bool isHeavyweight()     const { return JSFUN_HEAVYWEIGHT_TEST(flags); }
-    bool isNullClosure()     const { return kind() == JSFUN_NULL_CLOSURE; }
     bool isFunctionPrototype() const { return flags & JSFUN_PROTOTYPE; }
     bool isInterpretedConstructor() const { return isInterpreted() && !isFunctionPrototype(); }
-
-    uint16_t kind()          const { return flags & JSFUN_KINDMASK; }
-    void setKind(uint16_t k) {
-        JS_ASSERT(!(k & ~JSFUN_KINDMASK));
-        flags = (flags & ~JSFUN_KINDMASK) | k;
-    }
+    bool isNamedLambda()     const { return (flags & JSFUN_LAMBDA) && atom; }
 
     /* Returns the strictness of this function, which must be interpreted. */
     inline bool inStrictMode() const;
@@ -253,17 +244,32 @@ JSFunction::toExtended() const
     return static_cast<const js::FunctionExtended *>(this);
 }
 
-inline bool
-js_IsNamedLambda(JSFunction *fun) { return (fun->flags & JSFUN_LAMBDA) && fun->atom; }
-
 namespace js {
+
+JSString *FunctionToString(JSContext *cx, HandleFunction fun, bool bodyOnly, bool lambdaParen);
 
 template<XDRMode mode>
 bool
-XDRInterpretedFunction(XDRState<mode> *xdr, JSObject **objp, JSScript *parentScript);
+XDRInterpretedFunction(XDRState<mode> *xdr, HandleObject enclosingScope,
+                       HandleScript enclosingScript, JSObject **objp);
 
 extern JSObject *
-CloneInterpretedFunction(JSContext *cx, HandleFunction fun);
+CloneInterpretedFunction(JSContext *cx, HandleObject enclosingScope, HandleFunction fun);
+
+/*
+ * Report an error that call.thisv is not compatible with the specified class,
+ * assuming that the method (clasp->name).prototype.<name of callee function>
+ * is what was called.
+ */
+extern void
+ReportIncompatibleMethod(JSContext *cx, CallReceiver call, Class *clasp);
+
+/*
+ * Report an error that call.thisv is not an acceptable this for the callee
+ * function.
+ */
+extern void
+ReportIncompatible(JSContext *cx, CallReceiver call);
 
 } /* namespace js */
 

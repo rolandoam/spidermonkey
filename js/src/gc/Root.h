@@ -79,13 +79,22 @@ struct NullPtr
     static void * const constNullValue;
 };
 
+template <typename T>
+class MutableHandle;
+
+template <typename T>
+class HandleBase {};
+
 /*
  * Reference to a T that has been rooted elsewhere. This is most useful
  * as a parameter type, which guarantees that the T lvalue is properly
  * rooted. See "Move GC Stack Rooting" above.
+ *
+ * If you want to add additional methods to Handle for a specific
+ * specialization, define a HandleBase<T> specialization containing them.
  */
 template <typename T>
-class Handle
+class Handle : public HandleBase<T>
 {
   public:
     /* Creates a handle from a handle of a type convertible to T. */
@@ -100,6 +109,11 @@ class Handle
     Handle(NullPtr) {
         typedef typename js::tl::StaticAssert<js::tl::IsPointerType<T>::result>::result _;
         ptr = reinterpret_cast<const T *>(&NullPtr::constNullValue);
+    }
+
+    friend class MutableHandle<T>;
+    Handle(MutableHandle<T> handle) {
+        ptr = handle.address();
     }
 
     /*
@@ -139,10 +153,6 @@ class Handle
     void operator =(S v) MOZ_DELETE;
 };
 
-/* Defined in jsapi.h under Value definition */
-template <>
-class Handle<Value>;
-
 typedef Handle<JSObject*>    HandleObject;
 typedef Handle<JSFunction*>  HandleFunction;
 typedef Handle<JSScript*>    HandleScript;
@@ -150,12 +160,19 @@ typedef Handle<JSString*>    HandleString;
 typedef Handle<jsid>         HandleId;
 typedef Handle<Value>        HandleValue;
 
+template <typename T>
+class MutableHandleBase {};
+
 /*
  * Similar to a handle, but the underlying storage can be changed. This is
  * useful for outparams.
+ *
+ * If you want to add additional methods to MutableHandle for a specific
+ * specialization, define a MutableHandleBase<T> specialization containing
+ * them.
  */
 template <typename T>
-class MutableHandle
+class MutableHandle : public MutableHandleBase<T>
 {
   public:
     template <typename S>
@@ -176,6 +193,19 @@ class MutableHandle
         *ptr = v;
     }
 
+    /*
+     * This may be called only if the location of the T is guaranteed
+     * to be marked (for some reason other than being a Rooted),
+     * e.g., if it is guaranteed to be reachable from an implicit root.
+     *
+     * Create a MutableHandle from a raw location of a T.
+     */
+    static MutableHandle fromMarkedLocation(T *p) {
+        MutableHandle h;
+        h.ptr = p;
+        return h;
+    }
+
     T *address() const { return ptr; }
     T get() const { return *ptr; }
 
@@ -191,21 +221,35 @@ class MutableHandle
 typedef MutableHandle<JSObject*>    MutableHandleObject;
 typedef MutableHandle<Value>        MutableHandleValue;
 
+/*
+ * By default, pointers should use the inheritance hierarchy to find their
+ * ThingRootKind. Some pointer types are explicitly set in jspubtd.h so that
+ * Rooted<T> may be used without the class definition being available.
+ */
+template <typename T>
+struct RootKind<T *> { static ThingRootKind rootKind() { return T::rootKind(); }; };
+
 template <typename T>
 struct RootMethods<T *>
 {
     static T *initial() { return NULL; }
-    static ThingRootKind kind() { return T::rootKind(); }
+    static ThingRootKind kind() { return RootKind<T *>::rootKind(); }
     static bool poisoned(T *v) { return IsPoisonedPtr(v); }
 };
+
+template <typename T>
+class RootedBase {};
 
 /*
  * Local variable of type T whose value is always rooted. This is typically
  * used for local variables, or for non-rooted values being passed to a
  * function that requires a handle, e.g. Foo(Root<T>(cx, x)).
+ *
+ * If you want to add additional methods to Rooted for a specific
+ * specialization, define a RootedBase<T> specialization containing them.
  */
 template <typename T>
-class Rooted
+class Rooted : public RootedBase<T>
 {
     void init(JSContext *cx_)
     {
@@ -317,15 +361,7 @@ class SkipRoot
 
   public:
     template <typename T>
-    SkipRoot(JSContext *cx, const T *ptr
-             JS_GUARD_OBJECT_NOTIFIER_PARAM)
-    {
-        init(ContextFriendFields::get(cx), ptr, 1);
-        JS_GUARD_OBJECT_NOTIFIER_INIT;
-    }
-
-    template <typename T>
-    SkipRoot(JSContext *cx, const T *ptr, size_t count
+    SkipRoot(JSContext *cx, const T *ptr, size_t count = 1
              JS_GUARD_OBJECT_NOTIFIER_PARAM)
     {
         init(ContextFriendFields::get(cx), ptr, count);
@@ -348,14 +384,7 @@ class SkipRoot
 
   public:
     template <typename T>
-    SkipRoot(JSContext *cx, const T *ptr
-              JS_GUARD_OBJECT_NOTIFIER_PARAM)
-    {
-        JS_GUARD_OBJECT_NOTIFIER_INIT;
-    }
-
-    template <typename T>
-    SkipRoot(JSContext *cx, const T *ptr, size_t count
+    SkipRoot(JSContext *cx, const T *ptr, size_t count = 1
               JS_GUARD_OBJECT_NOTIFIER_PARAM)
     {
         JS_GUARD_OBJECT_NOTIFIER_INIT;
@@ -366,21 +395,30 @@ class SkipRoot
     JS_DECL_USE_GUARD_OBJECT_NOTIFIER
 };
 
+/*
+ * This typedef is to annotate parameters that we have manually verified do not
+ * need rooting, as opposed to parameters that have not yet been considered.
+ */
+typedef JSObject *RawObject;
+
 #ifdef DEBUG
 JS_FRIEND_API(bool) IsRootingUnnecessaryForContext(JSContext *cx);
 JS_FRIEND_API(void) SetRootingUnnecessaryForContext(JSContext *cx, bool value);
+JS_FRIEND_API(bool) RelaxRootChecksForContext(JSContext *cx);
 #endif
 
 class AssertRootingUnnecessary {
     JS_DECL_USE_GUARD_OBJECT_NOTIFIER
+#ifdef DEBUG
     JSContext *cx;
     bool prev;
+#endif
 public:
     AssertRootingUnnecessary(JSContext *cx JS_GUARD_OBJECT_NOTIFIER_PARAM)
-        : cx(cx)
     {
         JS_GUARD_OBJECT_NOTIFIER_INIT;
 #ifdef DEBUG
+        this->cx = cx;
         prev = IsRootingUnnecessaryForContext(cx);
         SetRootingUnnecessaryForContext(cx, true);
 #endif
@@ -402,11 +440,13 @@ CheckStackRoots(JSContext *cx);
  * Hook for dynamic root analysis. Checks the native stack and poisons
  * references to GC things which have not been rooted.
  */
-inline void MaybeCheckStackRoots(JSContext *cx)
+inline void MaybeCheckStackRoots(JSContext *cx, bool relax = true)
 {
 #ifdef DEBUG
     JS_ASSERT(!IsRootingUnnecessaryForContext(cx));
 # if defined(JS_GC_ZEAL) && defined(JSGC_ROOT_ANALYSIS) && !defined(JS_THREADSAFE)
+    if (relax && RelaxRootChecksForContext(cx))
+        return;
     CheckStackRoots(cx);
 # endif
 #endif

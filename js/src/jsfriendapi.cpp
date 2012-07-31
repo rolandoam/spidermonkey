@@ -23,6 +23,12 @@ using namespace js;
 using namespace JS;
 
 JS_FRIEND_API(void)
+JS_SetSourceHook(JSRuntime *rt, JS_SourceHook hook)
+{
+    rt->sourceHook = hook;
+}
+
+JS_FRIEND_API(void)
 JS_SetGrayGCRootsTracer(JSRuntime *rt, JSTraceDataOp traceOp, void *data)
 {
     rt->gcGrayRootsTraceOp = traceOp;
@@ -121,7 +127,7 @@ js::PrepareForIncrementalGC(JSRuntime *rt)
         return;
 
     for (CompartmentsIter c(rt); !c.done(); c.next()) {
-        if (c->needsBarrier())
+        if (c->wasGCStarted())
             PrepareCompartmentForGC(c);
     }
 }
@@ -433,6 +439,15 @@ js::SetReservedSlotWithBarrier(JSObject *obj, size_t slot, const js::Value &valu
     obj->setSlot(slot, value);
 }
 
+JS_FRIEND_API(bool)
+js::GetGeneric(JSContext *cx, JSObject *obj, JSObject *receiver_, jsid id_,
+               Value *vp)
+{
+    RootedObject receiver(cx, receiver_);
+    RootedId id(cx, id_);
+    return obj->getGeneric(cx, receiver, id, vp);
+}
+
 void
 js::SetPreserveWrapperCallback(JSRuntime *rt, PreserveWrapperCallback callback)
 {
@@ -452,7 +467,9 @@ JS_GetE4XObjectsCreated(JSContext *)
     return sE4XObjectsCreated;
 }
 
+namespace js {
 extern size_t sSetProtoCalled;
+}
 
 JS_FRIEND_API(size_t)
 JS_SetProtoCalled(JSContext *)
@@ -466,6 +483,17 @@ JS_FRIEND_API(size_t)
 JS_GetCustomIteratorCount(JSContext *cx)
 {
     return sCustomIteratorCount;
+}
+
+JS_FRIEND_API(JSBool)
+JS_IsDeadWrapper(JSObject *obj)
+{
+    if (!IsProxy(obj)) {
+        return false;
+    }
+
+    BaseProxyHandler *handler = GetProxyHandler(obj);
+    return handler->family() == &DeadObjectProxy::sDeadObjectFamily;
 }
 
 void
@@ -763,8 +791,13 @@ GCDescription::formatJSON(JSRuntime *rt, uint64_t timestamp) const
 JS_FRIEND_API(void)
 NotifyDidPaint(JSRuntime *rt)
 {
-    if (rt->gcZeal() == gc::ZealFrameVerifierValue) {
-        gc::VerifyBarriers(rt);
+    if (rt->gcZeal() == gc::ZealFrameVerifierPreValue) {
+        gc::VerifyBarriers(rt, gc::PreBarrierVerifier);
+        return;
+    }
+
+    if (rt->gcZeal() == gc::ZealFrameVerifierPostValue) {
+        gc::VerifyBarriers(rt, gc::PostBarrierVerifier);
         return;
     }
 
@@ -871,7 +904,12 @@ SetRuntimeProfilingStack(JSRuntime *rt, ProfileEntry *stack, uint32_t *size,
                          uint32_t max)
 {
     rt->spsProfiler.setProfilingStack(stack, size, max);
-    ReleaseAllJITCode(rt->defaultFreeOp());
+}
+
+JS_FRIEND_API(void)
+EnableRuntimeProfilingStack(JSRuntime *rt, bool enabled)
+{
+    rt->spsProfiler.enable(enabled);
 }
 
 } // namespace js

@@ -563,7 +563,7 @@ struct Shape : public js::gc::Cell
         Range(Shape *shape) : cursor(shape) { }
 
         bool empty() const {
-            return cursor->isEmptyShape();
+            return !cursor || cursor->isEmptyShape();
         }
 
         Shape &front() const {
@@ -1182,6 +1182,9 @@ MarkNonNativePropertyFound(HandleObject obj, MutableHandleShape propp);
 namespace JS {
     template<> class AnchorPermitted<js::Shape *> { };
     template<> class AnchorPermitted<const js::Shape *> { };
+
+    template<> struct RootKind<js::Shape *> { static ThingRootKind rootKind() { return THING_ROOT_SHAPE; }; };
+    template<> struct RootKind<js::BaseShape *> { static ThingRootKind rootKind() { return THING_ROOT_BASE_SHAPE; }; };
 }
 
 #endif /* jsscope_h___ */

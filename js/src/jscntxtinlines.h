@@ -251,6 +251,11 @@ class CompartmentChecker
             check(obj->compartment());
     }
 
+    template<typename T>
+    void check(Handle<T> handle) {
+        check(handle.get());
+    }
+
     void check(JSString *str) {
         if (!str->isAtom())
             check(str->compartment());
@@ -293,11 +298,8 @@ class CompartmentChecker
     }
 
     void check(JSScript *script) {
-        if (script) {
+        if (script)
             check(script->compartment());
-            if (!script->isCachedEval && script->globalObject)
-                check(script->globalObject);
-        }
     }
 
     void check(StackFrame *fp) {
@@ -379,10 +381,26 @@ JS_ALWAYS_INLINE bool
 CallJSNative(JSContext *cx, Native native, const CallArgs &args)
 {
 #ifdef DEBUG
-    JSBool alreadyThrowing = cx->isExceptionPending();
+    bool alreadyThrowing = cx->isExceptionPending();
 #endif
     assertSameCompartment(cx, args);
     bool ok = native(cx, args.length(), args.base());
+    if (ok) {
+        assertSameCompartment(cx, args.rval());
+        JS_ASSERT_IF(!alreadyThrowing, !cx->isExceptionPending());
+    }
+    return ok;
+}
+
+STATIC_PRECONDITION_ASSUME(ubound(args.argv_) >= argc)
+JS_ALWAYS_INLINE bool
+CallNativeImpl(JSContext *cx, NativeImpl impl, const CallArgs &args)
+{
+#ifdef DEBUG
+    bool alreadyThrowing = cx->isExceptionPending();
+#endif
+    assertSameCompartment(cx, args);
+    bool ok = impl(cx, args);
     if (ok) {
         assertSameCompartment(cx, args.rval());
         JS_ASSERT_IF(!alreadyThrowing, !cx->isExceptionPending());
@@ -545,7 +563,7 @@ JSContext::ensureParseMapPool()
 {
     if (parseMapPool_)
         return true;
-    parseMapPool_ = js::OffTheBooks::new_<js::ParseMapPool>(this);
+    parseMapPool_ = js::OffTheBooks::new_<js::frontend::ParseMapPool>(this);
     return parseMapPool_;
 }
 

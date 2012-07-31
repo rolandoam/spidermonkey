@@ -865,12 +865,12 @@ enum CompileRequest
 
 CompileStatus
 CanMethodJIT(JSContext *cx, JSScript *script, jsbytecode *pc,
-             bool construct, CompileRequest request);
+             bool construct, CompileRequest request, StackFrame *sp);
 
 inline void
 ReleaseScriptCode(FreeOp *fop, JSScript *script)
 {
-    if (!script->hasJITInfo())
+    if (!script->hasMJITInfo())
         return;
 
     for (int constructing = 0; constructing <= 1; constructing++) {
@@ -881,7 +881,7 @@ ReleaseScriptCode(FreeOp *fop, JSScript *script)
         }
     }
 
-    script->destroyJITInfo(fop);
+    script->destroyMJITInfo(fop);
 }
 
 // Expand all stack frames inlined by the JIT within a compartment.

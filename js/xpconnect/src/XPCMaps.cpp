@@ -48,7 +48,7 @@ HashNativeKey(JSDHashTable *table, const void *key)
         Position = Key->GetPosition();
     } else {
         Set      = (XPCNativeSet*) Key;
-        Addition = nsnull;
+        Addition = nullptr;
         Position = 0;
     }
 
@@ -80,43 +80,33 @@ HashNativeKey(JSDHashTable *table, const void *key)
 /***************************************************************************/
 // implement JSObject2WrappedJSMap...
 
-// static
-JSObject2WrappedJSMap*
-JSObject2WrappedJSMap::newMap(int size)
+void
+JSObject2WrappedJSMap::FindDyingJSObjects(nsTArray<nsXPCWrappedJS*>* dying)
 {
-    JSObject2WrappedJSMap* map = new JSObject2WrappedJSMap(size);
-    if (map && map->mTable)
-        return map;
-    delete map;
-    return nsnull;
+    for (Map::Range r = mTable.all(); !r.empty(); r.popFront()) {
+        nsXPCWrappedJS* wrapper = r.front().value;
+        NS_ASSERTION(wrapper, "found a null JS wrapper!");
+
+        // walk the wrapper chain and find any whose JSObject is to be finalized
+        while (wrapper) {
+            if (wrapper->IsSubjectToFinalization()) {
+                if (JS_IsAboutToBeFinalized(wrapper->GetJSObjectPreserveColor()))
+                    dying->AppendElement(wrapper);
+            }
+            wrapper = wrapper->GetNextWrapper();
+        }
+    }
 }
 
-JSObject2WrappedJSMap::JSObject2WrappedJSMap(int size)
+void
+JSObject2WrappedJSMap::ShutdownMarker(JSRuntime* rt)
 {
-    mTable = JS_NewDHashTable(JS_DHashGetStubOps(), nsnull,
-                              sizeof(Entry), size);
-}
-
-JSObject2WrappedJSMap::~JSObject2WrappedJSMap()
-{
-    if (mTable)
-        JS_DHashTableDestroy(mTable);
-}
-
-size_t
-JSObject2WrappedJSMap::SizeOfIncludingThis(nsMallocSizeOfFun mallocSizeOf)
-{
-    size_t n = 0;
-    n += mallocSizeOf(this);
-    n += mTable ? JS_DHashTableSizeOfIncludingThis(mTable, SizeOfEntryExcludingThis, mallocSizeOf) : 0;
-    return n;
-}
-
-/* static */ size_t
-JSObject2WrappedJSMap::SizeOfEntryExcludingThis(JSDHashEntryHdr *hdr,
-                                                JSMallocSizeOfFun mallocSizeOf, void *)
-{
-    return mallocSizeOf(((JSObject2WrappedJSMap::Entry*)hdr)->value);
+    for (Map::Range r = mTable.all(); !r.empty(); r.popFront()) {
+        nsXPCWrappedJS* wrapper = r.front().value;
+        NS_ASSERTION(wrapper, "found a null JS wrapper!");
+        NS_ASSERTION(wrapper->IsValid(), "found an invalid JS wrapper!");
+        wrapper->SystemIsBeingShutDown(rt);
+    }
 }
 
 /***************************************************************************/
@@ -134,12 +124,12 @@ Native2WrappedNativeMap::newMap(int size)
     // use the map, so we abort immediately to provide a more useful
     // crash stack.
     NS_RUNTIMEABORT("Ran out of memory.");
-    return nsnull;
+    return nullptr;
 }
 
 Native2WrappedNativeMap::Native2WrappedNativeMap(int size)
 {
-    mTable = JS_NewDHashTable(JS_DHashGetStubOps(), nsnull,
+    mTable = JS_NewDHashTable(JS_DHashGetStubOps(), nullptr,
                               sizeof(Entry), size);
 }
 
@@ -187,12 +177,12 @@ IID2WrappedJSClassMap::newMap(int size)
     if (map && map->mTable)
         return map;
     delete map;
-    return nsnull;
+    return nullptr;
 }
 
 IID2WrappedJSClassMap::IID2WrappedJSClassMap(int size)
 {
-    mTable = JS_NewDHashTable(&Entry::sOps, nsnull, sizeof(Entry), size);
+    mTable = JS_NewDHashTable(&Entry::sOps, nullptr, sizeof(Entry), size);
 }
 
 IID2WrappedJSClassMap::~IID2WrappedJSClassMap()
@@ -224,12 +214,12 @@ IID2NativeInterfaceMap::newMap(int size)
     if (map && map->mTable)
         return map;
     delete map;
-    return nsnull;
+    return nullptr;
 }
 
 IID2NativeInterfaceMap::IID2NativeInterfaceMap(int size)
 {
-    mTable = JS_NewDHashTable(&Entry::sOps, nsnull, sizeof(Entry), size);
+    mTable = JS_NewDHashTable(&Entry::sOps, nullptr, sizeof(Entry), size);
 }
 
 IID2NativeInterfaceMap::~IID2NativeInterfaceMap()
@@ -266,12 +256,12 @@ ClassInfo2NativeSetMap::newMap(int size)
     if (map && map->mTable)
         return map;
     delete map;
-    return nsnull;
+    return nullptr;
 }
 
 ClassInfo2NativeSetMap::ClassInfo2NativeSetMap(int size)
 {
-    mTable = JS_NewDHashTable(JS_DHashGetStubOps(), nsnull,
+    mTable = JS_NewDHashTable(JS_DHashGetStubOps(), nullptr,
                               sizeof(Entry), size);
 }
 
@@ -306,12 +296,12 @@ ClassInfo2WrappedNativeProtoMap::newMap(int size)
     // use the map, so we abort immediately to provide a more useful
     // crash stack.
     NS_RUNTIMEABORT("Ran out of memory.");
-    return nsnull;
+    return nullptr;
 }
 
 ClassInfo2WrappedNativeProtoMap::ClassInfo2WrappedNativeProtoMap(int size)
 {
-    mTable = JS_NewDHashTable(JS_DHashGetStubOps(), nsnull,
+    mTable = JS_NewDHashTable(JS_DHashGetStubOps(), nullptr,
                               sizeof(Entry), size);
 }
 
@@ -431,12 +421,12 @@ NativeSetMap::newMap(int size)
     if (map && map->mTable)
         return map;
     delete map;
-    return nsnull;
+    return nullptr;
 }
 
 NativeSetMap::NativeSetMap(int size)
 {
-    mTable = JS_NewDHashTable(&Entry::sOps, nsnull, sizeof(Entry), size);
+    mTable = JS_NewDHashTable(&Entry::sOps, nullptr, sizeof(Entry), size);
 }
 
 NativeSetMap::~NativeSetMap()
@@ -498,12 +488,12 @@ IID2ThisTranslatorMap::newMap(int size)
     if (map && map->mTable)
         return map;
     delete map;
-    return nsnull;
+    return nullptr;
 }
 
 IID2ThisTranslatorMap::IID2ThisTranslatorMap(int size)
 {
-    mTable = JS_NewDHashTable(&Entry::sOps, nsnull, sizeof(Entry), size);
+    mTable = JS_NewDHashTable(&Entry::sOps, nullptr, sizeof(Entry), size);
 }
 
 IID2ThisTranslatorMap::~IID2ThisTranslatorMap()
@@ -579,12 +569,12 @@ XPCNativeScriptableSharedMap::newMap(int size)
     if (map && map->mTable)
         return map;
     delete map;
-    return nsnull;
+    return nullptr;
 }
 
 XPCNativeScriptableSharedMap::XPCNativeScriptableSharedMap(int size)
 {
-    mTable = JS_NewDHashTable(&Entry::sOps, nsnull, sizeof(Entry), size);
+    mTable = JS_NewDHashTable(&Entry::sOps, nullptr, sizeof(Entry), size);
 }
 
 XPCNativeScriptableSharedMap::~XPCNativeScriptableSharedMap()
@@ -633,12 +623,12 @@ XPCWrappedNativeProtoMap::newMap(int size)
     if (map && map->mTable)
         return map;
     delete map;
-    return nsnull;
+    return nullptr;
 }
 
 XPCWrappedNativeProtoMap::XPCWrappedNativeProtoMap(int size)
 {
-    mTable = JS_NewDHashTable(JS_DHashGetStubOps(), nsnull,
+    mTable = JS_NewDHashTable(JS_DHashGetStubOps(), nullptr,
                               sizeof(JSDHashEntryStub), size);
 }
 

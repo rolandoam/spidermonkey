@@ -79,7 +79,10 @@ class PropertyId
     SpecialId asSpecial() const {
         return JSID_TO_SPECIALID(id);
     }
-    jsid asId() const {
+    const jsid &asId() const {
+        return id;
+    }
+    jsid &asId() {
         return id;
     }
 
@@ -1042,8 +1045,6 @@ class ObjectImpl : public gc::Cell
     friend struct GCMarker;
     friend struct Shape;
     friend class NewObjectCache;
-
-    inline bool hasContiguousSlots(uint32_t start, uint32_t count) const;
 
     inline void invalidateSlotRange(uint32_t start, uint32_t count);
     inline void initializeSlotRange(uint32_t start, uint32_t count);

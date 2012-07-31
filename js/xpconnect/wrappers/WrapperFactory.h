@@ -50,6 +50,8 @@ class WrapperFactory {
         return HasWrapperFlag(wrapper, SHADOWING_FORBIDDEN);
     }
 
+    static JSObject *GetXrayWaiver(JSObject *obj);
+    static JSObject *CreateXrayWaiver(JSContext *cx, JSObject *obj);
     static JSObject *WaiveXray(JSContext *cx, JSObject *obj);
 
     static JSObject *DoubleWrap(JSContext *cx, JSObject *obj, unsigned flags);
@@ -88,9 +90,12 @@ class WrapperFactory {
 
     // Wrap a (same compartment) Components object.
     static JSObject *WrapComponentsObject(JSContext *cx, JSObject *obj);
+
+    // Wrap a same-compartment object for Xray inspection.
+    static JSObject *WrapForSameCompartmentXray(JSContext *cx, JSObject *obj);
 };
 
-extern js::DirectWrapper WaiveXrayWrapperWrapper;
+extern js::DirectWrapper XrayWaiver;
 
 }
 

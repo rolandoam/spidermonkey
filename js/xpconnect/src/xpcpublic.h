@@ -32,6 +32,16 @@ class nsScriptNameSpaceManager;
 #define BAD_TLS_INDEX ((PRUint32) -1)
 #endif
 
+namespace xpc {
+JSObject *
+TransplantObject(JSContext *cx, JSObject *origobj, JSObject *target);
+
+JSObject *
+TransplantObjectWithWrapper(JSContext *cx,
+                            JSObject *origobj, JSObject *origwrapper,
+                            JSObject *targetobj, JSObject *targetwrapper);
+} /* namespace xpc */
+
 nsresult
 xpc_CreateGlobalObject(JSContext *cx, JSClass *clasp,
                        nsIPrincipal *principal, nsISupports *ptr,
@@ -128,7 +138,7 @@ xpc_FastGetCachedWrapper(nsWrapperCache *cache, JSObject *scope, jsval *vp)
         }
     }
 
-    return nsnull;
+    return nullptr;
 }
 
 // The JS GC marks objects gray that are held alive directly or

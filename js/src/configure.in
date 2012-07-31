@@ -145,76 +145,6 @@ else
 fi
 AC_SUBST(JS_SHARED_LIBRARY)
 
-dnl ========================================================
-dnl = First test to make it work for iOS
-dnl = Xcode >= 4.3.1 required
-dnl ========================================================
-
-MOZ_ARG_WITH_STRING(ios-target,
-[  --with-ios-target=SDK
-                          what target sdk to use, defaults to iPhoneSimulator],
-    ios_target=$withval,
-    ios_target="iPhoneSimulator")
-
-MOZ_ARG_WITH_STRING(ios-version,
-[  --with-ios-version=VER
-                          version of the iOS SDK, defaults to 5.1],
-    ios_sdk_version=$withval,
-    ios_sdk_version=5.1)
-
-MOZ_ARG_WITH_STRING(ios-min-version,
-[  --with-ios-min-version=VER
-                          deploy target version, defaults to 5.1],
-    ios_deploy_version=$withval,
-    ios_deploy_version=5.1)
-
-dnl ========================================================
-dnl = Android uses a very custom (hacky) toolchain; we need to do this
-dnl = here, so that the compiler checks can succeed
-dnl ========================================================
-
-MOZ_ARG_WITH_STRING(android-ndk,
-[  --with-android-ndk=DIR
-                          location where the Android NDK can be found],
-    android_ndk=$withval)
-
-MOZ_ARG_WITH_STRING(android-toolchain,
-[  --with-android-toolchain=DIR
-                          location of the android toolchain],
-    android_toolchain=$withval)
-
-
-MOZ_ARG_WITH_STRING(android-version,
-[  --with-android-version=VER
-                          android platform version, default 5],
-    android_version=$withval,
-    android_version=5)
-
-MOZ_ARG_WITH_STRING(android-sdk,
-[  --with-android-sdk=DIR
-                          location where the Android SDK can be found (base directory, e.g. .../android/platforms/android-6)],
-    android_sdk=$withval)
-
-MOZ_ARG_WITH_STRING(android-platform,
-[  --with-android-platform=DIR
-                           location of platform dir],
-    android_platform=$withval)
-
-case "$target" in
-arm-linux*-android*|*-linuxandroid*)
-    android_tool_prefix="arm-linux-androideabi"
-    ;;
-i?86-*android*)
-    android_tool_prefix="i686-android-linux"
-    ;;
-mipsel-*android*)
-    android_tool_prefix="mipsel-linux-android"
-    ;;
-*)
-    android_tool_prefix="$target_os"
-    ;;
-esac
-
 MOZ_ARG_WITH_STRING(gonk,
 [  --with-gonk=DIR
                location of gonk dir],
@@ -224,6 +154,12 @@ MOZ_ARG_WITH_STRING(gonk-toolchain-prefix,
 [  --with-gonk-toolchain-prefix=DIR
                           prefix to gonk toolchain commands],
     gonk_toolchain_prefix=$withval)
+
+MOZ_ARG_WITH_STRING(ios-target,
+[  --with-ios-target=SDK
+                          what target sdk to use, defaults to iPhoneSimulator],
+    ios_target=$withval,
+    ios_target="iPhoneSimulator")
 
 if test -n "$gonkdir" ; then
     kernel_name=`uname -s | tr "[[:upper:]]" "[[:lower:]]"`
@@ -275,6 +211,8 @@ if test -n "$gonkdir" ; then
     AC_DEFINE(ANDROID)
     AC_DEFINE(GONK)
     CROSS_COMPILE=1
+elif test -n "$ios_target" ; then
+    MOZ_IOS_SDK
 else
     MOZ_ANDROID_NDK
 fi
@@ -410,60 +348,7 @@ else
     fi
 fi
 
-GNU_AS=
-GNU_LD=
-GNU_CC=
-GNU_CXX=
-CC_VERSION='N/A'
-CXX_VERSION='N/A'
-if test "$GCC" = "yes"; then
-    GNU_CC=1
-    CC_VERSION=`$CC -v 2>&1 | grep 'gcc version'`
-fi
-if test "$GXX" = "yes"; then
-    GNU_CXX=1
-    CXX_VERSION=`$CXX -v 2>&1 | grep 'gcc version'`
-fi
-if test "`echo | $AS -o conftest.out -v 2>&1 | grep -c GNU`" != "0"; then
-    GNU_AS=1
-fi
-rm -f conftest.out
-if test "`echo | $LD -v 2>&1 | grep -c GNU`" != "0"; then
-    GNU_LD=1
-fi
-if test "$GNU_CC"; then
-    if `$CC -print-prog-name=ld` -v 2>&1 | grep -c GNU >/dev/null; then
-        GCC_USE_GNU_LD=1
-    fi
-fi
-
-INTEL_CC=
-INTEL_CXX=
-if test "$GCC" = yes; then
-   if test "`$CC -help 2>&1 | grep -c 'Intel(R) C++ Compiler'`" != "0"; then
-     INTEL_CC=1
-   fi
-fi
-
-if test "$GXX" = yes; then
-   if test "`$CXX -help 2>&1 | grep -c 'Intel(R) C++ Compiler'`" != "0"; then
-     INTEL_CXX=1
-   fi
-fi
-
-CLANG_CC=
-CLANG_CXX=
-if test "$GCC" = yes; then
-   if test "`$CC -v 2>&1 | grep -c 'clang version'`" != "0"; then
-     CLANG_CC=1
-   fi
-fi
-
-if test "$GXX" = yes; then
-   if test "`$CXX -v 2>&1 | grep -c 'clang version'`" != "0"; then
-     CLANG_CXX=1
-   fi
-fi
+MOZ_TOOL_VARIABLES
 
 dnl Special win32 checks
 dnl ========================================================
@@ -810,7 +695,6 @@ dnl ========================================================
 dnl = Mac OS X toolchain support
 dnl ========================================================
 
-if test "$host_cpu" != "arm" ; then
 case "$target_os" in
 darwin*)
     dnl Current known valid versions for GCC_VERSION are 2.95.2 3.1 3.3 4.0.
@@ -844,7 +728,6 @@ from building Mozilla. Upgrade to Xcode 2.1 or later.])
     MOZ_PATH_PROG(SDP, sdp, :, [$PATH:/usr/bin:/Developer/Tools])
     ;;
 esac
-fi
 
 AC_SUBST(GCC_VERSION)
 
@@ -1025,7 +908,6 @@ if test -n "$CROSS_COMPILE"; then
     esac
     case "${target}" in
         *-android*|*-linuxandroid*) OS_ARCH=Linux OS_TARGET=Android ;;
-        arm-apple-darwin*)          OS_ARCH=Darwin OS_TARGET=Darwin ;;
     esac
 else
     OS_TARGET=`uname -s`
@@ -1570,15 +1452,9 @@ case "$host" in
     ;;
 
 *-darwin*)
-    case "$host_cpu" in
-    *arm)
-        ;;
-    *i386)
-        HOST_CFLAGS="$HOST_CFLAGS -DXP_UNIX -DXP_MACOSX -DNO_X11"
-        HOST_NSPR_MDCPUCFG='\"md/_darwin.cfg\"'
-        HOST_OPTIMIZE_FLAGS="${HOST_OPTIMIZE_FLAGS=-O3}"
-        ;;
-    esac
+    HOST_CFLAGS="$HOST_CFLAGS -DXP_UNIX -DXP_MACOSX -DNO_X11"
+    HOST_NSPR_MDCPUCFG='\"md/_darwin.cfg\"'
+    HOST_OPTIMIZE_FLAGS="${HOST_OPTIMIZE_FLAGS=-O3}"
     ;;
 
 *-linux*|*-kfreebsd*-gnu|*-gnu*)
@@ -2326,22 +2202,12 @@ x86_64*-*)
     AC_DEFINE(JS_PUNBOX64)
     ;;
 arm*-*)
-    dnl dot not enable this for iOS
-    case "$target" in
-    arm-apple*)
-        if test "$ios_arch" == "armv7" ; then
-            AC_DEFINE(JS_CPU_ARM)
-        fi
-        ;;
-    *)
-        ENABLE_METHODJIT=1
-        ENABLE_MONOIC=1
-        ENABLE_POLYIC=1
-        ENABLE_POLYIC_TYPED_ARRAY=1
-        AC_DEFINE(JS_CPU_ARM)
-        AC_DEFINE(JS_NUNBOX32)
-        ;;
-    esac
+    ENABLE_METHODJIT=1
+    ENABLE_MONOIC=1
+    ENABLE_POLYIC=1
+    ENABLE_POLYIC_TYPED_ARRAY=1
+    AC_DEFINE(JS_CPU_ARM)
+    AC_DEFINE(JS_NUNBOX32)
     ;;
 sparc*-*)
     if test ! "$HAVE_64BIT_OS" ; then
@@ -3414,6 +3280,14 @@ if test -n "$MOZ_NATIVE_NSPR"; then
 fi
 
 dnl ========================================================
+dnl system zlib Support
+dnl ========================================================
+dnl Standalone js defaults to system zlib
+ZLIB_DIR=yes
+
+MOZ_ZLIB_CHECK([1.2.3])
+
+dnl ========================================================
 dnl system libffi Support
 dnl ========================================================
 MOZ_ARG_ENABLE_BOOL(system-ffi,
@@ -3957,32 +3831,7 @@ if test -n "$JS_OOM_DO_BACKTRACES"; then
     AC_DEFINE(JS_OOM_DO_BACKTRACES)
 fi
 
-dnl ======================================================
-dnl = Enable compiling with ccache
-dnl ======================================================
-MOZ_ARG_WITH_STRING(ccache,
-[  --with-ccache[=path/to/ccache]
-                          Enable compiling with ccache],
-    CCACHE=$withval, CCACHE="no")
-
-if test "$CCACHE" != "no"; then
-    if test -z "$CCACHE" -o "$CCACHE" = "yes"; then
-        CCACHE=
-    else
-        if test ! -e "$CCACHE"; then
-            AC_MSG_ERROR([$CCACHE not found])
-        fi
-    fi
-    MOZ_PATH_PROGS(CCACHE, $CCACHE ccache)
-    if test -z "$CCACHE" -o "$CCACHE" = ":"; then
-        AC_MSG_ERROR([ccache not found])
-    elif test -x "$CCACHE"; then
-        CC="$CCACHE $CC"
-        CXX="$CCACHE $CXX"
-    else
-        AC_MSG_ERROR([$CCACHE is not executable])
-    fi
-fi
+MOZ_CHECK_CCACHE
 
 dnl ========================================================
 dnl = Enable static checking using gcc-dehydra

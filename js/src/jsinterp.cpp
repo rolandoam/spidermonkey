@@ -59,6 +59,7 @@
 #include "jsscriptinlines.h"
 #include "jstypedarrayinlines.h"
 
+#include "builtin/Iterator-inl.h"
 #include "vm/Stack-inl.h"
 #include "vm/String-inl.h"
 
@@ -290,7 +291,7 @@ js::RunScript(JSContext *cx, JSScript *script, StackFrame *fp)
 #ifdef JS_METHODJIT
     mjit::CompileStatus status;
     status = mjit::CanMethodJIT(cx, script, script->code, fp->isConstructing(),
-                                mjit::CompileRequest_Interpreter);
+                                mjit::CompileRequest_Interpreter, fp);
     if (status == mjit::Compile_Error)
         return false;
 
@@ -479,7 +480,7 @@ js::ExecuteKernel(JSContext *cx, JSScript *script_, JSObject &scopeChain, const 
     if (!cx->stack.pushExecuteFrame(cx, script, thisv, scopeChain, type, evalInFrame, &efg))
         return false;
 
-    if (!script->ensureRanAnalysis(cx, &scopeChain))
+    if (!script->ensureRanAnalysis(cx))
         return false;
     TypeScript::SetThis(cx, script, efg.fp()->thisValue());
 
@@ -839,7 +840,7 @@ TryNoteIter::settle()
  * in *expr.
  */
 static bool
-DoIncDec(JSContext *cx, JSScript *script, jsbytecode *pc, const Value &v, Value *slot, Value *expr)
+DoIncDec(JSContext *cx, HandleScript script, jsbytecode *pc, const Value &v, Value *slot, Value *expr)
 {
     const JSCodeSpec &cs = js_CodeSpec[*pc];
 
@@ -879,20 +880,6 @@ DoIncDec(JSContext *cx, JSScript *script, jsbytecode *pc, const Value &v, Value 
 #define POP_COPY_TO(v)           v = *--regs.sp
 #define POP_RETURN_VALUE()       regs.fp()->setReturnValue(*--regs.sp)
 
-#define VALUE_TO_BOOLEAN(cx, vp, b)                                           \
-    JS_BEGIN_MACRO                                                            \
-        vp = &regs.sp[-1];                                                    \
-        if (vp->isNull()) {                                                   \
-            b = false;                                                        \
-        } else if (vp->isBoolean()) {                                         \
-            b = vp->toBoolean();                                              \
-        } else {                                                              \
-            b = !!js_ValueToBoolean(*vp);                                     \
-        }                                                                     \
-    JS_END_MACRO
-
-#define POP_BOOLEAN(cx, vp, b)   do { VALUE_TO_BOOLEAN(cx, vp, b); regs.sp--; } while(0)
-
 #define FETCH_OBJECT(cx, n, obj)                                              \
     JS_BEGIN_MACRO                                                            \
         Value *vp_ = &regs.sp[n];                                             \
@@ -923,7 +910,7 @@ template<typename T>
 class GenericInterruptEnabler : public InterpreterFrames::InterruptEnablerBase {
   public:
     GenericInterruptEnabler(T *variable, T value) : variable(variable), value(value) { }
-    void enableInterrupts() const { *variable = value; }
+    void enable() const { *variable = value; }
 
   private:
     T *variable;
@@ -1007,8 +994,8 @@ JS_STATIC_ASSERT(JSOP_INCNAME_LENGTH == JSOP_NAMEDEC_LENGTH);
 static inline bool
 IteratorMore(JSContext *cx, JSObject *iterobj, bool *cond, Value *rval)
 {
-    if (iterobj->isIterator()) {
-        NativeIterator *ni = iterobj->getNativeIterator();
+    if (iterobj->isPropertyIterator()) {
+        NativeIterator *ni = iterobj->asPropertyIterator().getNativeIterator();
         if (ni->isKeyIter()) {
             *cond = (ni->props_cursor < ni->props_end);
             return true;
@@ -1024,8 +1011,8 @@ IteratorMore(JSContext *cx, JSObject *iterobj, bool *cond, Value *rval)
 static inline bool
 IteratorNext(JSContext *cx, JSObject *iterobj, Value *rval)
 {
-    if (iterobj->isIterator()) {
-        NativeIterator *ni = iterobj->getNativeIterator();
+    if (iterobj->isPropertyIterator()) {
+        NativeIterator *ni = iterobj->asPropertyIterator().getNativeIterator();
         if (ni->isKeyIter()) {
             JS_ASSERT(ni->props_cursor < ni->props_end);
             rval->setString(*ni->current());
@@ -1088,7 +1075,7 @@ js::Interpret(JSContext *cx, StackFrame *entryFrame, InterpMode interpMode)
     register void * const *jumpTable = normalJumpTable;
 
     typedef GenericInterruptEnabler<void * const *> InterruptEnabler;
-    InterruptEnabler interruptEnabler(&jumpTable, interruptJumpTable);
+    InterruptEnabler interrupts(&jumpTable, interruptJumpTable);
 
 # define DO_OP()            JS_BEGIN_MACRO                                    \
                                 CHECK_PCCOUNT_INTERRUPTS();                   \
@@ -1116,7 +1103,7 @@ js::Interpret(JSContext *cx, StackFrame *entryFrame, InterpMode interpMode)
     register int switchMask = 0;
     int switchOp;
     typedef GenericInterruptEnabler<int> InterruptEnabler;
-    InterruptEnabler interruptEnabler(&switchMask, -1);
+    InterruptEnabler interrupts(&switchMask, -1);
 
 # define DO_OP()            goto do_op
 # define DO_NEXT_OP(n)      JS_BEGIN_MACRO                                    \
@@ -1150,8 +1137,6 @@ js::Interpret(JSContext *cx, StackFrame *entryFrame, InterpMode interpMode)
 # define END_EMPTY_CASES    goto advance_pc_by_one;
 
 #endif /* !JS_THREADED_INTERP */
-
-#define ENABLE_INTERRUPTS() (interruptEnabler.enableInterrupts())
 
 #define LOAD_DOUBLE(PCOFF, dbl)                                               \
     (dbl = script->getConst(GET_UINT32_INDEX(regs.pc + (PCOFF))).toDouble())
@@ -1214,18 +1199,10 @@ js::Interpret(JSContext *cx, StackFrame *entryFrame, InterpMode interpMode)
 #define SET_SCRIPT(s)                                                         \
     JS_BEGIN_MACRO                                                            \
         script = (s);                                                         \
-        if (script->hasAnyBreakpointsOrStepMode())                            \
-            ENABLE_INTERRUPTS();                                              \
-        if (script->hasScriptCounts)                                          \
-            ENABLE_INTERRUPTS();                                              \
+        if (script->hasAnyBreakpointsOrStepMode() || script->hasScriptCounts) \
+            interrupts.enable();                                              \
         JS_ASSERT_IF(interpMode == JSINTERP_SKIP_TRAP,                        \
                      script->hasAnyBreakpointsOrStepMode());                  \
-    JS_END_MACRO
-
-#define CHECK_INTERRUPT_HANDLER()                                             \
-    JS_BEGIN_MACRO                                                            \
-        if (cx->runtime->debugHooks.interruptHook)                            \
-            ENABLE_INTERRUPTS();                                              \
     JS_END_MACRO
 
     /* Repoint cx->regs to a local variable for faster access. */
@@ -1236,13 +1213,12 @@ js::Interpret(JSContext *cx, StackFrame *entryFrame, InterpMode interpMode)
      * Help Debugger find frames running scripts that it has put in
      * single-step mode.
      */
-    InterpreterFrames interpreterFrame(cx, &regs, interruptEnabler);
+    InterpreterFrames interpreterFrame(cx, &regs, interrupts);
 
     /* Copy in hot values that change infrequently. */
     JSRuntime *const rt = cx->runtime;
     Rooted<JSScript*> script(cx);
     SET_SCRIPT(regs.fp()->script());
-    CHECK_INTERRUPT_HANDLER();
 
     /*
      * Pool of rooters for use in this interpreter frame. References to these
@@ -1259,9 +1235,6 @@ js::Interpret(JSContext *cx, StackFrame *entryFrame, InterpMode interpMode)
     RootedPropertyName rootName0(cx);
     RootedId rootId0(cx);
     RootedShape rootShape0(cx);
-
-    if (rt->profilingScripts)
-        ENABLE_INTERRUPTS();
 
     if (!entryFrame)
         entryFrame = regs.fp();
@@ -1315,8 +1288,6 @@ js::Interpret(JSContext *cx, StackFrame *entryFrame, InterpMode interpMode)
     if (interpMode == JSINTERP_REJOIN)
         interpMode = JSINTERP_NORMAL;
 
-    CHECK_INTERRUPT_HANDLER();
-
     RESET_USE_METHODJIT();
 
     /*
@@ -1328,6 +1299,9 @@ js::Interpret(JSContext *cx, StackFrame *entryFrame, InterpMode interpMode)
     JSOp op;
     int32_t len;
     len = 0;
+
+    if (rt->profilingScripts || cx->runtime->debugHooks.interruptHook)
+        interrupts.enable();
 
     DO_NEXT_OP(len);
 
@@ -1424,7 +1398,6 @@ js::Interpret(JSContext *cx, StackFrame *entryFrame, InterpMode interpMode)
                 break;
             }
             JS_ASSERT(status == JSTRAP_CONTINUE);
-            CHECK_INTERRUPT_HANDLER();
             JS_ASSERT(rval.isInt32() && rval.toInt32() == op);
         }
 
@@ -1488,7 +1461,7 @@ check_backedge:
         DO_OP();
     mjit::CompileStatus status =
         mjit::CanMethodJIT(cx, script, regs.pc, regs.fp()->isConstructing(),
-                           mjit::CompileRequest_Interpreter);
+                           mjit::CompileRequest_Interpreter, regs.fp());
     if (status == mjit::Compile_Error)
         goto error;
     if (status == mjit::Compile_Okay) {
@@ -1635,9 +1608,8 @@ END_CASE(JSOP_GOTO)
 
 BEGIN_CASE(JSOP_IFEQ)
 {
-    bool cond;
-    Value *_;
-    POP_BOOLEAN(cx, _, cond);
+    bool cond = ToBoolean(regs.sp[-1]);
+    regs.sp--;
     if (cond == false) {
         len = GET_JUMP_OFFSET(regs.pc);
         BRANCH(len);
@@ -1647,9 +1619,8 @@ END_CASE(JSOP_IFEQ)
 
 BEGIN_CASE(JSOP_IFNE)
 {
-    bool cond;
-    Value *_;
-    POP_BOOLEAN(cx, _, cond);
+    bool cond = ToBoolean(regs.sp[-1]);
+    regs.sp--;
     if (cond != false) {
         len = GET_JUMP_OFFSET(regs.pc);
         BRANCH(len);
@@ -1659,9 +1630,7 @@ END_CASE(JSOP_IFNE)
 
 BEGIN_CASE(JSOP_OR)
 {
-    bool cond;
-    Value *_;
-    VALUE_TO_BOOLEAN(cx, _, cond);
+    bool cond = ToBoolean(regs.sp[-1]);
     if (cond == true) {
         len = GET_JUMP_OFFSET(regs.pc);
         DO_NEXT_OP(len);
@@ -1671,9 +1640,7 @@ END_CASE(JSOP_OR)
 
 BEGIN_CASE(JSOP_AND)
 {
-    bool cond;
-    Value *_;
-    VALUE_TO_BOOLEAN(cx, _, cond);
+    bool cond = ToBoolean(regs.sp[-1]);
     if (cond == false) {
         len = GET_JUMP_OFFSET(regs.pc);
         DO_NEXT_OP(len);
@@ -1738,7 +1705,6 @@ BEGIN_CASE(JSOP_ITER)
     uint8_t flags = GET_UINT8(regs.pc);
     if (!ValueToIterator(cx, flags, &regs.sp[-1]))
         goto error;
-    CHECK_INTERRUPT_HANDLER();
     JS_ASSERT(!regs.sp[-1].isPrimitive());
 }
 END_CASE(JSOP_ITER)
@@ -1751,7 +1717,6 @@ BEGIN_CASE(JSOP_MOREITER)
     bool cond;
     if (!IteratorMore(cx, &regs.sp[-2].toObject(), &cond, &regs.sp[-1]))
         goto error;
-    CHECK_INTERRUPT_HANDLER();
     regs.sp[-1].setBoolean(cond);
 }
 END_CASE(JSOP_MOREITER)
@@ -2126,9 +2091,8 @@ END_CASE(JSOP_MOD)
 
 BEGIN_CASE(JSOP_NOT)
 {
-    Value *_;
-    bool cond;
-    POP_BOOLEAN(cx, _, cond);
+    bool cond = ToBoolean(regs.sp[-1]);
+    regs.sp--;
     PUSH_BOOLEAN(!cond);
 }
 END_CASE(JSOP_NOT)
@@ -2412,7 +2376,6 @@ BEGIN_CASE(JSOP_EVAL)
         if (!InvokeKernel(cx, args))
             goto error;
     }
-    CHECK_INTERRUPT_HANDLER();
     regs.sp = args.spAfterCall();
     TypeScript::Monitor(cx, script, regs.pc, regs.sp[-1]);
 }
@@ -2445,7 +2408,6 @@ BEGIN_CASE(JSOP_FUNCALL)
         Value *newsp = args.spAfterCall();
         TypeScript::Monitor(cx, script, regs.pc, newsp[-1]);
         regs.sp = newsp;
-        CHECK_INTERRUPT_HANDLER();
         len = JSOP_CALL_LENGTH;
         DO_NEXT_OP(len);
     }
@@ -2454,6 +2416,8 @@ BEGIN_CASE(JSOP_FUNCALL)
         goto error;
 
     InitialFrameFlags initial = construct ? INITIAL_CONSTRUCT : INITIAL_NONE;
+
+    bool newType = cx->typeInferenceEnabled() && UseNewType(cx, script, regs.pc);
 
     JSScript *newScript = fun->script();
 
@@ -2468,21 +2432,19 @@ BEGIN_CASE(JSOP_FUNCALL)
     SET_SCRIPT(regs.fp()->script());
     RESET_USE_METHODJIT();
 
-    bool newType = cx->typeInferenceEnabled() && UseNewType(cx, script, regs.pc);
-
 #ifdef JS_METHODJIT
     if (!newType) {
         /* Try to ensure methods are method JIT'd.  */
         mjit::CompileStatus status = mjit::CanMethodJIT(cx, script, script->code,
                                                         construct,
-                                                        mjit::CompileRequest_Interpreter);
+                                                        mjit::CompileRequest_Interpreter,
+                                                        regs.fp());
         if (status == mjit::Compile_Error)
             goto error;
         if (status == mjit::Compile_Okay) {
             mjit::JaegerStatus status = mjit::JaegerShot(cx, true);
             CHECK_PARTIAL_METHODJIT(status);
             interpReturnOK = mjit::JaegerStatusToSuccess(status);
-            CHECK_INTERRUPT_HANDLER();
             goto jit_return;
         }
     }
@@ -2504,8 +2466,6 @@ BEGIN_CASE(JSOP_FUNCALL)
             JS_NOT_REACHED("bad ScriptDebugPrologue status");
         }
     }
-
-    CHECK_INTERRUPT_HANDLER();
 
     /* Load first op and dispatch it (safe since JSOP_STOP). */
     op = (JSOp) *regs.pc;
@@ -2764,6 +2724,7 @@ BEGIN_CASE(JSOP_GETALIASEDVAR)
 {
     ScopeCoordinate sc = ScopeCoordinate(regs.pc);
     PUSH_COPY(regs.fp()->aliasedVarScope(sc).aliasedVar(sc));
+    TypeScript::Monitor(cx, script, regs.pc, regs.sp[-1]);
 }
 END_CASE(JSOP_GETALIASEDVAR)
 
@@ -3077,8 +3038,6 @@ BEGIN_CASE(JSOP_NEWINIT)
 
     PUSH_OBJECT(*obj);
     TypeScript::Monitor(cx, script, regs.pc, regs.sp[-1]);
-
-    CHECK_INTERRUPT_HANDLER();
 }
 END_CASE(JSOP_NEWINIT)
 
@@ -3092,8 +3051,6 @@ BEGIN_CASE(JSOP_NEWARRAY)
 
     PUSH_OBJECT(*obj);
     TypeScript::Monitor(cx, script, regs.pc, regs.sp[-1]);
-
-    CHECK_INTERRUPT_HANDLER();
 }
 END_CASE(JSOP_NEWARRAY)
 
@@ -3109,8 +3066,6 @@ BEGIN_CASE(JSOP_NEWOBJECT)
 
     PUSH_OBJECT(*obj);
     TypeScript::Monitor(cx, script, regs.pc, regs.sp[-1]);
-
-    CHECK_INTERRUPT_HANDLER();
 }
 END_CASE(JSOP_NEWOBJECT)
 
@@ -3324,7 +3279,6 @@ BEGIN_CASE(JSOP_DEBUGGER)
         goto error;
       default:;
     }
-    CHECK_INTERRUPT_HANDLER();
 }
 END_CASE(JSOP_DEBUGGER)
 
@@ -3841,7 +3795,6 @@ END_CASE(JSOP_ARRAYPUSH)
               case JSTRAP_CONTINUE:
               default:;
             }
-            CHECK_INTERRUPT_HANDLER();
         }
 
         for (TryNoteIter tni(regs); !tni.done(); ++tni) {
