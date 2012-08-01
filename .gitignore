@@ -1,5 +1,7 @@
 *.pyc
 js/src/build-ios/
+js/src/build-mac/
+js/src/configure
 .DS_Store
 
 # android temporary build files
